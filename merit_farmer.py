@@ -6,6 +6,7 @@ A generic, multi-account compatible automation tool for Voratoon Cultivation sys
 Features:
 - Dynamic series discovery (fetches popular series automatically, no hardcoded IDs)
 - Multi-account support (single token or comma-separated tokens in .env / CLI)
+- Helper / Symbiotic Auto-Like Boost (+100 Merit from Resonansi Qi)
 - Stealth jitter & natural human delay simulation
 - Rich CLI interface (--help, --status-only, --series, --delay)
 - Zero external dependencies (pure Python 3 standard library)
@@ -46,6 +47,8 @@ COMMENTS_POOL = [
     "Makin seru aja tensi ceritanya, auto bookmark"
 ]
 
+SERIES_POOL = [4718, 7133, 8261, 4541, 5501, 1658, 6490, 1880, 7488, 797]
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Voratoon Cultivation Merit Auto-Maxer CLI",
@@ -55,31 +58,42 @@ def parse_args():
     parser.add_argument("-s", "--series", default="magic-emperor", help="Target series slug for chapters")
     parser.add_argument("-d", "--delay-mult", type=float, default=1.0, help="Delay multiplier for request intervals")
     parser.add_argument("--status-only", action="store_true", help="Only check profile status and daily quotas without claiming")
+    parser.add_argument("--no-boost", action="store_true", help="Disable helper account auto-like booster")
     return parser.parse_args()
 
-def load_tokens(cli_token: str = None) -> list[str]:
-    """Load one or multiple tokens from CLI or environment."""
+def load_tokens_config(cli_token: str = None) -> tuple[list[str], str, str]:
+    """Load tokens, including primary and helper tokens if set."""
+    tokens = []
+    t_primary = None
+    t_helper = None
+
     if cli_token:
-        return [t.strip() for t in cli_token.split(",") if t.strip()]
+        tokens = [t.strip() for t in cli_token.split(",") if t.strip()]
+        return tokens, (tokens[0] if tokens else None), (tokens[1] if len(tokens) > 1 else None)
 
     env_token = os.environ.get("VORATOON_TOKEN")
     if env_token:
-        return [t.strip() for t in env_token.split(",") if t.strip()]
+        tokens = [t.strip() for t in env_token.split(",") if t.strip()]
 
     if ENV_FILE.exists():
-        tokens = []
         with open(ENV_FILE, "r") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("VORATOON_TOKEN="):
                     val = line.split("=", 1)[1].strip().strip('"').strip("'")
                     tokens.extend([t.strip() for t in val.split(",") if t.strip()])
-                elif line.startswith("oat_") or line.startswith("ey"):
-                    tokens.append(line)
-        if tokens:
-            return tokens
+                elif line.startswith("ACCOUNT_1_TOKEN="):
+                    t_primary = line.split("=", 1)[1].strip().strip('"').strip("'")
+                elif line.startswith("ACCOUNT_2_TOKEN="):
+                    t_helper = line.split("=", 1)[1].strip().strip('"').strip("'")
 
-    return []
+    if not t_primary and tokens:
+        t_primary = tokens[0]
+    if not t_helper and len(tokens) > 1:
+        t_helper = tokens[1]
+
+    unique_tokens = list(dict.fromkeys(tokens))
+    return unique_tokens, t_primary, t_helper
 
 def api_request(path: str, token: str = "", method: str = "GET", body: dict = None) -> tuple[int, dict]:
     url = f"{BASE_API}{path}"
@@ -112,7 +126,6 @@ def api_request(path: str, token: str = "", method: str = "GET", body: dict = No
         return 500, {"error": str(e)}
 
 def discover_series(fallback_slug: str = "magic-emperor") -> tuple[int, str]:
-    """Dynamically discover a popular series ID and slug."""
     st, res = api_request("/popular")
     if st == 200 and "data" in res and isinstance(res["data"], list) and len(res["data"]) > 0:
         first = res["data"][0]
@@ -128,12 +141,32 @@ def discover_series(fallback_slug: str = "magic-emperor") -> tuple[int, str]:
     return 4718, fallback_slug
 
 def fetch_series_chapters(series_slug: str, limit: int = 50) -> list[int]:
-    """Fetch valid chapter IDs from target series."""
     st, res = api_request(f"/series/{series_slug}/chapters")
     if st == 200 and "data" in res and isinstance(res["data"], list):
         chapters = [c["id"] for c in res["data"] if isinstance(c, dict) and "id" in c]
         return chapters[:limit]
     return []
+
+def boost_helper_likes(primary_token: str, helper_token: str, target_likes: int = 50):
+    """Account 2 upvotes Account 1's comments to unlock full Resonansi Qi (+100 Merit)."""
+    print("\n" + "=" * 60)
+    print("🤝 Menjalankan Helper Booster: Like Komentar Silang (Resonansi Qi)")
+    print("=" * 60)
+    
+    likes_done = 0
+    for i in range(target_likes):
+        sid = random.choice(SERIES_POOL)
+        phrase = random.choice(COMMENTS_POOL) + f" #{random.randint(100, 999)}"
+        
+        st_p, res_p = api_request("/comments", token=primary_token, method="POST", body={"seriesId": sid, "content": phrase})
+        if st_p in [200, 201] and "data" in res_p and "id" in res_p["data"]:
+            cid = res_p["data"]["id"]
+            st_u, _ = api_request(f"/comments/{cid}/upvote", token=helper_token, method="POST", body={})
+            if st_u in [200, 201]:
+                likes_done += 1
+        time.sleep(0.18)
+
+    print(f"✓ Helper Booster Selesai: {likes_done}/{target_likes} like berhasil disuntikkan!")
 
 def farm_account(token: str, target_series_id: int, target_series_slug: str, delay_mult: float, status_only: bool = False):
     mask_token = token[:8] + "..." + token[-6:] if len(token) > 14 else "token"
@@ -220,14 +253,10 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
 
 def main():
     args = parse_args()
-    tokens = load_tokens(args.token)
+    tokens, primary_token, helper_token = load_tokens_config(args.token)
 
     if not tokens:
         print("❌ [ERROR] Tidak ada token Voratoon yang ditemukan!")
-        print("💡 Masukkan token melalui:")
-        print("   1. File .env: VORATOON_TOKEN=\"oat_xxx\"")
-        print("   2. Flag CLI : python3 merit_farmer.py --token \"oat_xxx\"")
-        print("   3. Export env: export VORATOON_TOKEN=\"oat_xxx\"")
         sys.exit(1)
 
     print("=" * 60)
@@ -238,14 +267,22 @@ def main():
     target_id, target_slug = discover_series(args.series)
     print(f"🎯 Target Series: {target_slug} (ID: {target_id})")
 
+    # 1. Farm individual quotas for all accounts
     for idx, token in enumerate(tokens, 1):
         try:
             farm_account(token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
         except Exception as e:
             print(f"❌ Error pada akun #{idx}: {e}")
 
+    # 2. If helper account exists, run symbiotic auto-like boost for primary account
+    if not args.status_only and not args.no_boost and primary_token and helper_token and primary_token != helper_token:
+        try:
+            boost_helper_likes(primary_token, helper_token, target_likes=50)
+        except Exception as e:
+            print(f"❌ Error saat helper like boost: {e}")
+
     print("\n" + "=" * 60)
-    print("✅ Seluruh antrean akun telah selesai diproses.")
+    print("✅ Seluruh antrean akun & auto-boost telah selesai diproses.")
     print("=" * 60)
 
 if __name__ == "__main__":
