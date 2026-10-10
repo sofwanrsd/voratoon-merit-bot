@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Voratoon Daily Merit Auto-Maxer (Full Complete Automation)
-Farms 100% maximum daily limits:
-- Daily Login (+20) [1/1]
-- 50 Chapter Reads (+500) [50/50]
-- 5 Comments (+75) [5/5]
-- Status Verification
+Voratoon Daily Merit Auto-Maxer (General Public Edition)
+A generic, multi-account compatible automation tool for Voratoon Cultivation system.
+
+Features:
+- Dynamic series discovery (fetches popular series automatically, no hardcoded IDs)
+- Multi-account support (single token or comma-separated tokens in .env / CLI)
+- Stealth jitter & natural human delay simulation
+- Rich CLI interface (--help, --status-only, --series, --delay)
+- Zero external dependencies (pure Python 3 standard library)
 """
 
 import os
@@ -13,33 +16,72 @@ import sys
 import time
 import random
 import json
+import argparse
 import urllib.request
 import urllib.error
 from pathlib import Path
 
 BASE_API = "https://api.voratoon.com"
 ORIGIN = "https://v8.voratoon.com"
-
 ENV_FILE = Path(__file__).parent / ".env"
 
-def get_token() -> str:
-    if len(sys.argv) > 1 and sys.argv[1].startswith("oat_"):
-        return sys.argv[1].strip()
-    
-    token = os.environ.get("VORATOON_TOKEN")
-    if token:
-        return token.strip()
-    
+COMMENTS_POOL = [
+    "Karakter utamanya semakin berkembang sangat baik di sini",
+    "Alur ceritanya tidak membosankan dan selalu seru dibaca",
+    "Kualitas art dan visual komik ini sangat memanjakan mata",
+    "Pertarungan di bagian ini sangat menegangkan dan memuaskan",
+    "Terima kasih untuk mimin yang selalu update dengan cepat",
+    "Plot twist di chapter ini bener-bener gak ketebak sama sekali",
+    "Gak sabar nunggu kelanjutan cerita di chapter berikutnya",
+    "Panel terakhir bener-bener bikin penasaran kelanjutannya",
+    "Visualisasi jurus dan efek pertarungannya keren banget",
+    "Pembangunan karakter sampingannya juga dapet banget feelnya",
+    "Semoga mimin sehat selalu dan lancar terus garapannya",
+    "Bagus banget ceritanya, sangat rekomendasi buat dibaca maraton",
+    "Art style makin ke sini makin rapi dan detail banget",
+    "Konflik ceritanya makin matang dan seru buat diikutin",
+    "Gokil sih ini adaptasinya rapi banget terjemahannya",
+    "Setiap minggunya selalu nungguin rilis komik ini",
+    "Pengembangan dunianya detail dan seru untuk diikuti",
+    "Makin seru aja tensi ceritanya, auto bookmark"
+]
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Voratoon Cultivation Merit Auto-Maxer CLI",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument("-t", "--token", help="Voratoon Bearer Token (overrides .env)")
+    parser.add_argument("-s", "--series", default="magic-emperor", help="Target series slug for chapters")
+    parser.add_argument("-d", "--delay-mult", type=float, default=1.0, help="Delay multiplier for request intervals")
+    parser.add_argument("--status-only", action="store_true", help="Only check profile status and daily quotas without claiming")
+    return parser.parse_args()
+
+def load_tokens(cli_token: str = None) -> list[str]:
+    """Load one or multiple tokens from CLI or environment."""
+    if cli_token:
+        return [t.strip() for t in cli_token.split(",") if t.strip()]
+
+    env_token = os.environ.get("VORATOON_TOKEN")
+    if env_token:
+        return [t.strip() for t in env_token.split(",") if t.strip()]
+
     if ENV_FILE.exists():
+        tokens = []
         with open(ENV_FILE, "r") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("VORATOON_TOKEN="):
-                    return line.split("=", 1)[1].strip().strip('"').strip("'")
-    
-    return ""
+                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    tokens.extend([t.strip() for t in val.split(",") if t.strip()])
+                elif line.startswith("oat_") or line.startswith("ey"):
+                    tokens.append(line)
+        if tokens:
+            return tokens
 
-def api_request(path: str, token: str, method: str = "GET", body: dict = None) -> tuple[int, dict]:
+    return []
+
+def api_request(path: str, token: str = "", method: str = "GET", body: dict = None) -> tuple[int, dict]:
     url = f"{BASE_API}{path}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -49,12 +91,12 @@ def api_request(path: str, token: str, method: str = "GET", body: dict = None) -
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    
+
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
         data = json.dumps(body).encode("utf-8")
-    
+
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -69,88 +111,142 @@ def api_request(path: str, token: str, method: str = "GET", body: dict = None) -
     except Exception as e:
         return 500, {"error": str(e)}
 
-def fetch_target_chapters() -> list[int]:
-    status, res = api_request("/series/magic-emperor/chapters", token="")
-    if status == 200 and "data" in res:
+def discover_series(fallback_slug: str = "magic-emperor") -> tuple[int, str]:
+    """Dynamically discover a popular series ID and slug."""
+    st, res = api_request("/popular")
+    if st == 200 and "data" in res and isinstance(res["data"], list) and len(res["data"]) > 0:
+        first = res["data"][0]
+        s_id = first.get("id")
+        s_slug = first.get("data", {}).get("slug")
+        if s_id and s_slug:
+            return s_id, s_slug
+
+    st_fb, res_fb = api_request(f"/series/{fallback_slug}")
+    if st_fb == 200 and "data" in res_fb:
+        return res_fb["data"].get("id", 4718), fallback_slug
+
+    return 4718, fallback_slug
+
+def fetch_series_chapters(series_slug: str, limit: int = 50) -> list[int]:
+    """Fetch valid chapter IDs from target series."""
+    st, res = api_request(f"/series/{series_slug}/chapters")
+    if st == 200 and "data" in res and isinstance(res["data"], list):
         chapters = [c["id"] for c in res["data"] if isinstance(c, dict) and "id" in c]
-        return chapters[:50]
+        return chapters[:limit]
     return []
 
-def run_farm():
-    token = get_token()
-    if not token:
-        print("[ERROR] Token Voratoon belum disetel!")
+def farm_account(token: str, target_series_id: int, target_series_slug: str, delay_mult: float, status_only: bool = False):
+    mask_token = token[:8] + "..." + token[-6:] if len(token) > 14 else "token"
+    print("\n" + "=" * 60)
+    print(f"🔑 Processing Account [{mask_token}]")
+    print("=" * 60)
+
+    # 1. Profile Status
+    st, me = api_request("/cultivation/me", token=token)
+    if st != 200:
+        print(f"❌ Autentikasi Gagal ({st}): Token mungkin kedaluwarsa.")
+        return
+
+    c_data = me.get("data", {})
+    daily = c_data.get("daily", {})
+    print(f"👤 Pengguna   : {c_data.get('username', 'Member')}")
+    print(f"🏆 Kultivasi  : Level {c_data.get('level')} ({c_data.get('tier', {}).get('name', '-')})")
+    print(f"✨ Total Merit: {c_data.get('merit', 0)} | Exp: {c_data.get('exp', 0)}")
+    print(f"📊 Kuota Hari : Login {daily.get('login', {}).get('used', 0)}/{daily.get('login', {}).get('limit', 1)} | "
+          f"Bab {daily.get('chapters', {}).get('used', 0)}/{daily.get('chapters', {}).get('limit', 50)} | "
+          f"Komen {daily.get('comments', {}).get('used', 0)}/{daily.get('comments', {}).get('limit', 5)}")
+
+    if status_only:
+        print("ℹ️ Mode --status-only aktif, klaim dilewati.")
+        return
+
+    # 2. Daily Login Reward
+    if daily.get("login", {}).get("remaining", 1) > 0:
+        print("\n[1/3] Mengklaim Login Harian (+20 Merit)...")
+        st_l, res_l = api_request("/cultivation/rewards/daily-login", token=token, method="POST", body={})
+        if st_l in [200, 201]:
+            print("  ✓ Login harian berhasil diklaim!")
+        else:
+            print(f"  - Login harian: {res_l.get('message', res_l.get('error', 'Sudah diklaim'))}")
+    else:
+        print("\n[1/3] Login harian sudah selesai hari ini.")
+
+    # 3. Chapter Reads Reward
+    ch_rem = daily.get("chapters", {}).get("remaining", 50)
+    if ch_rem > 0:
+        print(f"\n[2/3] Membaca Chapter (Sisa kuota: {ch_rem})...")
+        chapters = fetch_series_chapters(target_series_slug, limit=ch_rem)
+        if not chapters:
+            print("  ⚠ Gagal mengambil daftar bab. Melewati langkah ini.")
+        else:
+            chap_ok = 0
+            for cid in chapters:
+                st_c, _ = api_request("/cultivation/rewards/chapter", token=token, method="POST", body={"targetId": cid, "mode": "chapter"})
+                if st_c in [200, 201]:
+                    chap_ok += 1
+                time.sleep(random.uniform(0.2, 0.5) * delay_mult)
+            print(f"  ✓ Selesai: {chap_ok}/{len(chapters)} bab berhasil diklaim.")
+    else:
+        print("\n[2/3] Kuota baca 50 chapter sudah maksimal hari ini.")
+
+    # 4. Comments Reward
+    com_rem = daily.get("comments", {}).get("remaining", 5)
+    if com_rem > 0:
+        print(f"\n[3/3] Mengirim & Mengklaim Komentar (Sisa kuota: {com_rem})...")
+        selected_comments = random.sample(COMMENTS_POOL, min(com_rem, len(COMMENTS_POOL)))
+        comm_ok = 0
+        for text in selected_comments:
+            st_post, res_post = api_request("/comments", token=token, method="POST", body={"seriesId": target_series_id, "content": text})
+            if st_post in [200, 201] and "data" in res_post and "id" in res_post["data"]:
+                cid = res_post["data"]["id"]
+                st_claim, _ = api_request("/cultivation/rewards/comment", token=token, method="POST", body={"targetId": cid})
+                if st_claim in [200, 201]:
+                    comm_ok += 1
+            time.sleep(random.uniform(0.7, 1.4) * delay_mult)
+        print(f"  ✓ Selesai: {comm_ok}/{len(selected_comments)} komentar berhasil diklaim.")
+    else:
+        print("\n[3/3] Kuota 5 komentar sudah maksimal hari ini.")
+
+    # 5. Final Status
+    st_f, final_me = api_request("/cultivation/me", token=token)
+    if st_f == 200:
+        fd = final_me.get("data", {})
+        f_daily = fd.get("daily", {})
+        print("\n" + "-" * 60)
+        print(f"🎉 STATUS AKHIR: Level {fd.get('level')} | Total Merit {fd.get('merit')} (+{fd.get('merit', 0) - c_data.get('merit', 0)})")
+        print(f"📈 HASIL HARI INI: Login {f_daily.get('login', {}).get('used')}/{f_daily.get('login', {}).get('limit')} | "
+              f"Bab {f_daily.get('chapters', {}).get('used')}/{f_daily.get('chapters', {}).get('limit')} | "
+              f"Komen {f_daily.get('comments', {}).get('used')}/{f_daily.get('comments', {}).get('limit')}")
+
+def main():
+    args = parse_args()
+    tokens = load_tokens(args.token)
+
+    if not tokens:
+        print("❌ [ERROR] Tidak ada token Voratoon yang ditemukan!")
+        print("💡 Masukkan token melalui:")
+        print("   1. File .env: VORATOON_TOKEN=\"oat_xxx\"")
+        print("   2. Flag CLI : python3 merit_farmer.py --token \"oat_xxx\"")
+        print("   3. Export env: export VORATOON_TOKEN=\"oat_xxx\"")
         sys.exit(1)
-    
-    print("=" * 55)
-    print("🚀 VORATOON DAILY MERIT AUTO-MAXER RUNNING")
-    print("=" * 55)
-    
-    # Check Profile
-    status, me = api_request("/cultivation/me", token=token)
-    if status != 200:
-        print(f"[ERROR] Failed to authenticate ({status}). Response: {me}")
-        sys.exit(1)
-    
-    cur_data = me.get("data", {})
-    print(f"Level: {cur_data.get('level')} | Merit: {cur_data.get('merit')} | Exp: {cur_data.get('exp')}")
 
-    # 1. Daily Login
-    st, res = api_request("/cultivation/rewards/daily-login", token=token, method="POST", body={})
-    print(f"✓ Daily Login: {'OK (+20)' if st in [200, 201] else 'Already claimed'}")
+    print("=" * 60)
+    print("🚀 VORATOON CULTIVATION MERIT AUTO-MAXER (GENERAL EDITION)")
+    print("=" * 60)
+    print(f"📌 Ditemukan {len(tokens)} akun untuk diproses.")
 
-    # 2. 50 Chapters
-    chapters = fetch_target_chapters()
-    if chapters:
-        print(f"→ Processing {len(chapters)} chapter reads with stealth jitter...")
-        chap_ok = 0
-        for cid in chapters:
-            st, _ = api_request("/cultivation/rewards/chapter", token=token, method="POST", body={"targetId": cid, "mode": "chapter"})
-            if st in [200, 201]:
-                chap_ok += 1
-            # Random delay jitter between 0.25s and 0.65s (looks like human scrolling)
-            time.sleep(random.uniform(0.25, 0.65))
-        print(f"✓ Chapters: {chap_ok}/{len(chapters)} claims recorded")
+    target_id, target_slug = discover_series(args.series)
+    print(f"🎯 Target Series: {target_slug} (ID: {target_id})")
 
-    # 3. 5 Comments (> 5 words each, randomized pool)
-    comments_pool = [
-        "Karakter utamanya semakin berkembang sangat baik di sini",
-        "Alur ceritanya tidak membosankan dan selalu seru dibaca",
-        "Kualitas art dan visual komik ini sangat memanjakan mata",
-        "Pertarungan di bagian ini sangat menegangkan dan memuaskan",
-        "Terima kasih untuk mimin yang selalu update dengan cepat",
-        "Plot twist di chapter ini bener-bener gak ketebak sama sekali",
-        "Gak sabar nunggu kelanjutan cerita di chapter berikutnya",
-        "Panel terakhir bener-bener bikin penasaran kelanjutannya",
-        "Visualisasi jurus dan efek pertarungannya keren banget",
-        "Pembangunan karakter sampingannya juga dapet banget feelnya",
-        "Semoga mimin sehat selalu dan lancar terus garapannya",
-        "Bagus banget ceritanya, sangat rekomendasi buat dibaca maraton",
-        "Art style makin ke sini makin rapi dan detail banget",
-        "Konflik ceritanya makin matang dan seru buat diikutin",
-        "Gokil sih ini adaptasinya rapi banget terjemahannya"
-    ]
-    selected_comments = random.sample(comments_pool, 5)
-    print("→ Processing 5 organic comment rewards...")
-    comm_ok = 0
-    for text in selected_comments:
-        st_c, res_c = api_request("/comments", token=token, method="POST", body={"seriesId": 4718, "content": text})
-        if st_c in [200, 201] and "data" in res_c and "id" in res_c["data"]:
-            cid = res_c["data"]["id"]
-            st_cl, _ = api_request("/cultivation/rewards/comment", token=token, method="POST", body={"targetId": cid})
-            if st_cl in [200, 201]:
-                comm_ok += 1
-        time.sleep(random.uniform(0.8, 1.6))
-    print(f"✓ Comments: {comm_ok}/5 rewards recorded")
+    for idx, token in enumerate(tokens, 1):
+        try:
+            farm_account(token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
+        except Exception as e:
+            print(f"❌ Error pada akun #{idx}: {e}")
 
-    # Final Verification
-    _, final_me = api_request("/cultivation/me", token=token)
-    fd = final_me.get("data", {})
-    daily = fd.get("daily", {})
-    print("-" * 55)
-    print(f"★ FINAL STATUS: Level {fd.get('level')} | Total Merit {fd.get('merit')}")
-    print(f"★ DAILY STATS : Login {daily.get('login', {}).get('used')}/{daily.get('login', {}).get('limit')} | Chapters {daily.get('chapters', {}).get('used')}/{daily.get('chapters', {}).get('limit')} | Comments {daily.get('comments', {}).get('used')}/{daily.get('comments', {}).get('limit')}")
-    print("=" * 55)
+    print("\n" + "=" * 60)
+    print("✅ Seluruh antrean akun telah selesai diproses.")
+    print("=" * 60)
 
 if __name__ == "__main__":
-    run_farm()
+    main()
