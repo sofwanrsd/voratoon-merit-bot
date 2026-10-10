@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Voratoon Daily Merit Auto-Maxer (General Public Edition)
-A generic, multi-account compatible automation tool for Voratoon Cultivation system.
+Voratoon Daily Merit Auto-Maxer
+A clean, multi-account compatible automation tool for Voratoon Cultivation system.
 
 Features:
 - Dynamic series discovery (fetches popular series automatically, no hardcoded IDs)
@@ -62,7 +62,6 @@ def parse_args():
     return parser.parse_args()
 
 def load_tokens_config(cli_token: str = None) -> tuple[list[str], str, str]:
-    """Load tokens, including primary and helper tokens if set."""
     tokens = []
     t_primary = None
     t_helper = None
@@ -148,9 +147,8 @@ def fetch_series_chapters(series_slug: str, limit: int = 50) -> list[int]:
     return []
 
 def boost_helper_likes(primary_token: str, helper_token: str, target_likes: int = 50):
-    """Account 2 upvotes Account 1's comments to unlock full Resonansi Qi (+100 Merit)."""
     print("\n" + "=" * 60)
-    print("🤝 Menjalankan Helper Booster: Like Komentar Silang (Resonansi Qi)")
+    print("[*] Menjalankan Helper Booster: Like Komentar Silang (Resonansi Qi)")
     print("=" * 60)
     
     likes_done = 0
@@ -166,31 +164,31 @@ def boost_helper_likes(primary_token: str, helper_token: str, target_likes: int 
                 likes_done += 1
         time.sleep(0.18)
 
-    print(f"✓ Helper Booster Selesai: {likes_done}/{target_likes} like berhasil disuntikkan!")
+    print(f"[OK] Helper Booster Selesai: {likes_done}/{target_likes} like berhasil disuntikkan!")
 
 def farm_account(token: str, target_series_id: int, target_series_slug: str, delay_mult: float, status_only: bool = False):
     mask_token = token[:8] + "..." + token[-6:] if len(token) > 14 else "token"
     print("\n" + "=" * 60)
-    print(f"🔑 Processing Account [{mask_token}]")
+    print(f"[*] Memproses Akun [{mask_token}]")
     print("=" * 60)
 
     # 1. Profile Status
     st, me = api_request("/cultivation/me", token=token)
     if st != 200:
-        print(f"❌ Autentikasi Gagal ({st}): Token mungkin kedaluwarsa.")
+        print(f"[ERROR] Autentikasi Gagal ({st}): Token mungkin kedaluwarsa.")
         return
 
     c_data = me.get("data", {})
     daily = c_data.get("daily", {})
-    print(f"👤 Pengguna   : {c_data.get('username', 'Member')}")
-    print(f"🏆 Kultivasi  : Level {c_data.get('level')} ({c_data.get('tier', {}).get('name', '-')})")
-    print(f"✨ Total Merit: {c_data.get('merit', 0)} | Exp: {c_data.get('exp', 0)}")
-    print(f"📊 Kuota Hari : Login {daily.get('login', {}).get('used', 0)}/{daily.get('login', {}).get('limit', 1)} | "
+    print(f"[-] Pengguna   : {c_data.get('username', 'Member')}")
+    print(f"[-] Kultivasi  : Level {c_data.get('level')} ({c_data.get('tier', {}).get('name', '-')})")
+    print(f"[-] Total Merit: {c_data.get('merit', 0)} | Exp: {c_data.get('exp', 0)}")
+    print(f"[-] Kuota Hari : Login {daily.get('login', {}).get('used', 0)}/{daily.get('login', {}).get('limit', 1)} | "
           f"Bab {daily.get('chapters', {}).get('used', 0)}/{daily.get('chapters', {}).get('limit', 50)} | "
           f"Komen {daily.get('comments', {}).get('used', 0)}/{daily.get('comments', {}).get('limit', 5)}")
 
     if status_only:
-        print("ℹ️ Mode --status-only aktif, klaim dilewati.")
+        print("[INFO] Mode --status-only aktif, klaim dilewati.")
         return
 
     # 2. Daily Login Reward
@@ -198,9 +196,9 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
         print("\n[1/3] Mengklaim Login Harian (+20 Merit)...")
         st_l, res_l = api_request("/cultivation/rewards/daily-login", token=token, method="POST", body={})
         if st_l in [200, 201]:
-            print("  ✓ Login harian berhasil diklaim!")
+            print("  [OK] Login harian berhasil diklaim!")
         else:
-            print(f"  - Login harian: {res_l.get('message', res_l.get('error', 'Sudah diklaim'))}")
+            print(f"  [-] Login harian: {res_l.get('message', res_l.get('error', 'Sudah diklaim'))}")
     else:
         print("\n[1/3] Login harian sudah selesai hari ini.")
 
@@ -210,7 +208,7 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
         print(f"\n[2/3] Membaca Chapter (Sisa kuota: {ch_rem})...")
         chapters = fetch_series_chapters(target_series_slug, limit=ch_rem)
         if not chapters:
-            print("  ⚠ Gagal mengambil daftar bab. Melewati langkah ini.")
+            print("  [WARN] Gagal mengambil daftar bab. Melewati langkah ini.")
         else:
             chap_ok = 0
             for cid in chapters:
@@ -218,7 +216,7 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
                 if st_c in [200, 201]:
                     chap_ok += 1
                 time.sleep(random.uniform(0.2, 0.5) * delay_mult)
-            print(f"  ✓ Selesai: {chap_ok}/{len(chapters)} bab berhasil diklaim.")
+            print(f"  [OK] Selesai: {chap_ok}/{len(chapters)} bab berhasil diklaim.")
     else:
         print("\n[2/3] Kuota baca 50 chapter sudah maksimal hari ini.")
 
@@ -236,7 +234,7 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
                 if st_claim in [200, 201]:
                     comm_ok += 1
             time.sleep(random.uniform(0.7, 1.4) * delay_mult)
-        print(f"  ✓ Selesai: {comm_ok}/{len(selected_comments)} komentar berhasil diklaim.")
+        print(f"  [OK] Selesai: {comm_ok}/{len(selected_comments)} komentar berhasil diklaim.")
     else:
         print("\n[3/3] Kuota 5 komentar sudah maksimal hari ini.")
 
@@ -246,8 +244,8 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
         fd = final_me.get("data", {})
         f_daily = fd.get("daily", {})
         print("\n" + "-" * 60)
-        print(f"🎉 STATUS AKHIR: Level {fd.get('level')} | Total Merit {fd.get('merit')} (+{fd.get('merit', 0) - c_data.get('merit', 0)})")
-        print(f"📈 HASIL HARI INI: Login {f_daily.get('login', {}).get('used')}/{f_daily.get('login', {}).get('limit')} | "
+        print(f"[STATUS] Level {fd.get('level')} | Total Merit {fd.get('merit')} (+{fd.get('merit', 0) - c_data.get('merit', 0)})")
+        print(f"[STATUS] Hasil Hari Ini: Login {f_daily.get('login', {}).get('used')}/{f_daily.get('login', {}).get('limit')} | "
               f"Bab {f_daily.get('chapters', {}).get('used')}/{f_daily.get('chapters', {}).get('limit')} | "
               f"Komen {f_daily.get('comments', {}).get('used')}/{f_daily.get('comments', {}).get('limit')}")
 
@@ -256,33 +254,33 @@ def main():
     tokens, primary_token, helper_token = load_tokens_config(args.token)
 
     if not tokens:
-        print("❌ [ERROR] Tidak ada token Voratoon yang ditemukan!")
+        print("[ERROR] Tidak ada token Voratoon yang ditemukan!")
         sys.exit(1)
 
     print("=" * 60)
-    print("🚀 VORATOON CULTIVATION MERIT AUTO-MAXER (GENERAL EDITION)")
+    print("Voratoon Cultivation Merit Auto-Maxer")
     print("=" * 60)
-    print(f"📌 Ditemukan {len(tokens)} akun untuk diproses.")
+    print(f"[*] Ditemukan {len(tokens)} akun untuk diproses.")
 
     target_id, target_slug = discover_series(args.series)
-    print(f"🎯 Target Series: {target_slug} (ID: {target_id})")
+    print(f"[*] Target Series: {target_slug} (ID: {target_id})")
 
     # 1. Farm individual quotas for all accounts
     for idx, token in enumerate(tokens, 1):
         try:
             farm_account(token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
         except Exception as e:
-            print(f"❌ Error pada akun #{idx}: {e}")
+            print(f"[ERROR] Masalah pada akun #{idx}: {e}")
 
     # 2. If helper account exists, run symbiotic auto-like boost for primary account
     if not args.status_only and not args.no_boost and primary_token and helper_token and primary_token != helper_token:
         try:
             boost_helper_likes(primary_token, helper_token, target_likes=50)
         except Exception as e:
-            print(f"❌ Error saat helper like boost: {e}")
+            print(f"[ERROR] Masalah saat helper like boost: {e}")
 
     print("\n" + "=" * 60)
-    print("✅ Seluruh antrean akun & auto-boost telah selesai diproses.")
+    print("[OK] Seluruh antrean akun dan auto-boost selesai diproses.")
     print("=" * 60)
 
 if __name__ == "__main__":

@@ -1,46 +1,53 @@
-# 🚀 Voratoon Daily Merit Auto-Maxer (General Edition)
+# Voratoon Daily Merit Auto-Maxer
 
-Tool otomasi serbaguna (*general-purpose*) untuk memaksimalkan akumulasi **Merit** dan kenaikan **Level** pada sistem Kultivasi Voratoon (`v8.voratoon.com`). Dibuat murni menggunakan modul bawaan Python (*zero external dependencies*) dan mendukung multi-akun secara serentak.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python: 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-Automated-2088FF.svg?logo=github-actions&logoColor=white)](.github/workflows/daily_farm.yml)
 
----
-
-## ✨ Fitur Utama
-- ⚡ **Auto Daily Login:** Klaim reward login harian otomatis (+20 Merit).
-- 📖 **Auto 50 Chapter Reads:** Otomatis membaca 50 chapter dengan simulasi jeda manusiawi/jitter (+500 Merit).
-- 💬 **Auto 5 Komentar Organik:** Pengiriman & klaim 5 komentar unik (> 5 kata) dari bank kalimat acak agar lolos filter anti-spam (+75 Merit).
-- 🤝 **Symbiotic Like Booster:** Dukungan akun helper/tumbal untuk auto-upvote komentar agar membuka jatah penuh **+100 Merit (Resonansi Qi)** hingga total mentok **695 Merit/hari**.
-- 👥 **Multi-Account Support:** Mendukung pemrosesan banyak akun sekaligus dalam satu kali perintah (cukup pisahkan token dengan koma).
-- 🎯 **Dynamic Series Discovery:** Menemukan serial komik populer secara otomatis tanpa perlu hardcode ID.
-- 🎛️ **CLI Flags Lengkap:** Mendukung `--status-only` untuk cek kuota, `--token` untuk input fleksibel, serta `--delay-mult`.
-- ☁️ **GitHub Actions Ready:** Bisa berjalan otomatis 24/7 di cloud GitHub Actions secara **gratis tanpa perlu sewa VPS**.
+Tool otomasi untuk memaksimalkan akumulasi Merit dan kenaikan Level pada sistem Kultivasi Voratoon (`v8.voratoon.com`). Dibuat menggunakan modul bawaan Python tanpa dependensi eksternal tambahan dan mendukung pemrosesan multi-akun.
 
 ---
 
-## 🚀 Panduan Penggunaan
+## Fitur Utama
 
-### 1. Dapatkan Auth Token Akun
-1. Buka browser dan login ke akun Voratoon lo di [v8.voratoon.com](https://v8.voratoon.com).
-2. Tekan **F12** (atau klik kanan -> *Inspect*) -> buka tab **Console**.
-3. Jalankan baris perintah ini lalu tekan Enter:
+- **Auto Daily Login:** Klaim reward login harian otomatis (+20 Merit).
+- **Auto 50 Chapter Reads:** Otomatis membaca 50 chapter dengan jeda simulasi acak / jitter (+500 Merit).
+- **Auto 5 Komentar Organik:** Pengiriman dan klaim 5 komentar unik (> 5 kata) dari bank kalimat acak agar sesuai dengan aturan anti-spam (+75 Merit).
+- **Symbiotic Like Booster:** Dukungan akun pembantu (helper/tumbal) untuk melakukan upvote silang komentar agar membuka jatah penuh +100 Merit (Resonansi Qi) hingga total maksimal 695 Merit per hari.
+- **Dukungan Multi-Akun:** Mendukung pemrosesan banyak akun sekaligus dalam satu kali eksekusi (cukup pisahkan token dengan tanda koma).
+- **Pencarian Serial Dinamis:** Mendeteksi komik populer secara dinamis tanpa perlu konfigurasi ID manual.
+- **Parameter CLI:** Mendukung `--status-only` untuk pemeriksaan kuota, `--token` untuk input langsung, dan `--delay-mult`.
+- **Integrasi GitHub Actions:** Mendukung eksekusi terjadwal otomatis di cloud GitHub Actions tanpa perlu server VPS pribadi.
+
+---
+
+## Panduan Penggunaan
+
+### 1. Dapatkan Token Sesi Akun
+
+1. Buka browser dan login ke akun Voratoon di [v8.voratoon.com](https://v8.voratoon.com).
+2. Buka DevTools Console (**F12** atau klik kanan -> *Inspect* -> pilih tab *Console*).
+3. Jalankan perintah berikut lalu tekan Enter:
    ```javascript
    copy(localStorage.getItem("komikcast_session_persistent"))
    ```
-   *(Token sesi personal `oat_...` akan otomatis tersalin ke clipboard).*
+   *(Token sesi format `oat_...` akan langsung tersalin ke clipboard).*
 
 ---
 
-### OPSI A: Otomatisasi Gratis via GitHub Actions (Tanpa VPS) ☁️
-Cocok untuk siapa saja yang ingin jalan otomatis tanpa punya server sendiri:
-1. **Fork** repository ini ke akun GitHub lo.
-2. Di repository hasil fork lo, masuk ke tab **Settings** -> **Secrets and variables** -> **Actions**.
-3. Klik tombol **New repository secret**.
-4. Isi Name: `VORATOON_TOKEN` dan Value: Token sesi akun lo (bisa single atau dipisah koma untuk multi-akun).
-5. Selesai! Bot akan otomatis berjalan setiap hari pada pukul **00:01 WIB** via GitHub Actions.
+### Metode 1: Otomatisasi via GitHub Actions (Cloud Serverless)
+
+1. **Fork** repositori ini ke akun GitHub Anda.
+2. Buka repositori hasil fork, masuk ke menu **Settings** -> **Secrets and variables** -> **Actions**.
+3. Klik **New repository secret**.
+4. Isi Name dengan `VORATOON_TOKEN` dan Value dengan token akun Anda (dapat diisi satu token atau beberapa token yang dipisahkan koma).
+5. Selesai. Workflow GitHub Actions akan otomatis dijalankan setiap hari pada pukul **00:01 WIB** (17:01 UTC).
 
 ---
 
-### OPSI B: Menjalankan Mandiri di Komputer / VPS Linux 💻
-1. **Clone Repository:**
+### Metode 2: Menjalankan Mandiri di Linux / VPS / Komputer Lokal
+
+1. **Clone Repositori:**
    ```bash
    git clone https://github.com/sofwanrsd/voratoon-merit-bot.git
    cd voratoon-merit-bot
@@ -51,26 +58,27 @@ Cocok untuk siapa saja yang ingin jalan otomatis tanpa punya server sendiri:
    cp .env.example .env
    nano .env
    ```
-   Isi file `.env` dengan token:
+   Isi file `.env`:
    ```env
-   # Satu akun:
-   VORATOON_TOKEN="oat_PASTE_TOKEN_DISINI"
+   # Format satu akun:
+   VORATOON_TOKEN="oat_TOKEN_DISINI"
 
-   # Atau multi-akun (Akun Utama + Akun Helper untuk like booster):
+   # Atau format dua akun (Akun Utama + Akun Helper untuk like booster):
    # ACCOUNT_1_TOKEN="oat_AKUN_UTAMA"
    # ACCOUNT_2_TOKEN="oat_AKUN_HELPER"
    ```
+   *(Pastikan permission file dibatasi: `chmod 600 .env`)*
 
-3. **Jalankan Bot:**
+3. **Menjalankan Script:**
    ```bash
    # Eksekusi klaim otomatis
    python3 merit_farmer.py
 
-   # Cek profil & kuota tanpa klaim
+   # Pemeriksaan status akun tanpa klaim
    python3 merit_farmer.py --status-only
    ```
 
-4. **Jadwalkan di Crontab (00:01 WIB):**
+4. **Jadwal Crontab Linux (00:01 WIB):**
    ```bash
    crontab -e
    ```
@@ -81,17 +89,25 @@ Cocok untuk siapa saja yang ingin jalan otomatis tanpa punya server sendiri:
 
 ---
 
-## 🛠️ CLI Options
-| Flag | Default | Penjelasan |
+## Parameter CLI
+
+| Parameter | Nilai Default | Penjelasan |
 |---|---|---|
-| `-h, --help` | - | Menampilkan panduan parameter CLI |
-| `-t, --token` | None | Menentukan token langsung (menimpa file `.env`) |
-| `-s, --series` | `magic-emperor` | Target slug komik untuk pembacaan chapter |
-| `-d, --delay-mult` | `1.0` | Pengali delay (misal: `1.5` untuk jeda lebih lambat/santai) |
-| `--status-only` | `False` | Hanya memeriksa info profil & limit harian tanpa klaim |
+| `-h, --help` | - | Menampilkan panduan opsi CLI |
+| `-t, --token` | None | Menentukan token secara langsung (menimpa file `.env`) |
+| `-s, --series` | `magic-emperor` | Target slug serial komik untuk pembacaan chapter |
+| `-d, --delay-mult` | `1.0` | Pengali jeda waktu antar request |
+| `--status-only` | `False` | Hanya menampilkan info profil dan sisa kuota harian |
 | `--no-boost` | `False` | Menonaktifkan helper auto-like booster |
 
 ---
 
-## ⚠️ Disclaimer
-Project ini dibuat semata-mata untuk tujuan riset, edukasi, dan pembuktian konsep (PoC) mengenai otomasi web dan pengujian ketahanan API. Gunakan secara bijak dan bertanggung jawab.
+## Lisensi
+
+Proyek ini dilisensikan di bawah lisensi MIT. Lihat file [LICENSE](LICENSE) untuk detail lengkap.
+
+---
+
+## Catatan
+
+Proyek ini dibuat untuk tujuan riset, edukasi, dan pembuktian konsep (PoC) mengenai otomasi web dan pengujian ketahanan API. Gunakan secara bijak dan bertanggung jawab.
