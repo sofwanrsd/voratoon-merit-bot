@@ -102,6 +102,12 @@ Tool otomasi untuk memaksimalkan akumulasi Merit dan kenaikan Level pada sistem 
 
 ---
 
+## Kontribusi
+
+Kontribusi, perbaikan bug, saran fitur, issue, dan pull request sangat terbuka bebas bagi siapa saja yang ingin mengembangkan proyek ini lebih lanjut. Silakan fork repositori ini dan kirimkan PR Anda.
+
+---
+
 ## Lisensi
 
 Proyek ini dilisensikan di bawah lisensi MIT. Lihat file [LICENSE](LICENSE) untuk detail lengkap.
