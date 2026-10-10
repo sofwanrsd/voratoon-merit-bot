@@ -1,0 +1,25 @@
+name: Voratoon Daily Merit Farm
+
+on:
+  schedule:
+    # 17:01 UTC = 00:01 WIB (Waktu reset harian Voratoon)
+    - cron: '1 17 * * *'
+  workflow_dispatch:
+
+jobs:
+  farm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Merit Auto-Maxer
+        env:
+          VORATOON_TOKEN: ${{ secrets.VORATOON_TOKEN }}
+        run: |
+          python merit_farmer.py
