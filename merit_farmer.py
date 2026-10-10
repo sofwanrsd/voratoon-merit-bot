@@ -11,13 +11,14 @@ Farms 100% maximum daily limits:
 import os
 import sys
 import time
+import random
 import json
 import urllib.request
 import urllib.error
 from pathlib import Path
 
 BASE_API = "https://api.voratoon.com"
-ORIGIN = "https://v2.voratoon.com"
+ORIGIN = "https://v8.voratoon.com"
 
 ENV_FILE = Path(__file__).parent / ".env"
 
@@ -101,33 +102,45 @@ def run_farm():
     # 2. 50 Chapters
     chapters = fetch_target_chapters()
     if chapters:
-        print(f"→ Processing {len(chapters)} chapter reads...")
+        print(f"→ Processing {len(chapters)} chapter reads with stealth jitter...")
         chap_ok = 0
         for cid in chapters:
             st, _ = api_request("/cultivation/rewards/chapter", token=token, method="POST", body={"targetId": cid, "mode": "chapter"})
             if st in [200, 201]:
                 chap_ok += 1
-            time.sleep(0.12)
+            # Random delay jitter between 0.25s and 0.65s (looks like human scrolling)
+            time.sleep(random.uniform(0.25, 0.65))
         print(f"✓ Chapters: {chap_ok}/{len(chapters)} claims recorded")
 
-    # 3. 5 Comments (> 5 words each)
+    # 3. 5 Comments (> 5 words each, randomized pool)
     comments_pool = [
         "Karakter utamanya semakin berkembang sangat baik di sini",
         "Alur ceritanya tidak membosankan dan selalu seru dibaca",
         "Kualitas art dan visual komik ini sangat memanjakan mata",
         "Pertarungan di bagian ini sangat menegangkan dan memuaskan",
-        "Terima kasih untuk mimin yang selalu update dengan cepat"
+        "Terima kasih untuk mimin yang selalu update dengan cepat",
+        "Plot twist di chapter ini bener-bener gak ketebak sama sekali",
+        "Gak sabar nunggu kelanjutan cerita di chapter berikutnya",
+        "Panel terakhir bener-bener bikin penasaran kelanjutannya",
+        "Visualisasi jurus dan efek pertarungannya keren banget",
+        "Pembangunan karakter sampingannya juga dapet banget feelnya",
+        "Semoga mimin sehat selalu dan lancar terus garapannya",
+        "Bagus banget ceritanya, sangat rekomendasi buat dibaca maraton",
+        "Art style makin ke sini makin rapi dan detail banget",
+        "Konflik ceritanya makin matang dan seru buat diikutin",
+        "Gokil sih ini adaptasinya rapi banget terjemahannya"
     ]
-    print("→ Processing 5 comment rewards...")
+    selected_comments = random.sample(comments_pool, 5)
+    print("→ Processing 5 organic comment rewards...")
     comm_ok = 0
-    for text in comments_pool:
+    for text in selected_comments:
         st_c, res_c = api_request("/comments", token=token, method="POST", body={"seriesId": 4718, "content": text})
         if st_c in [200, 201] and "data" in res_c and "id" in res_c["data"]:
             cid = res_c["data"]["id"]
             st_cl, _ = api_request("/cultivation/rewards/comment", token=token, method="POST", body={"targetId": cid})
             if st_cl in [200, 201]:
                 comm_ok += 1
-        time.sleep(0.3)
+        time.sleep(random.uniform(0.8, 1.6))
     print(f"✓ Comments: {comm_ok}/5 rewards recorded")
 
     # Final Verification

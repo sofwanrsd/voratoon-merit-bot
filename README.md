@@ -1,6 +1,6 @@
 # 🚀 Voratoon Daily Merit Auto-Maxer
 
-Bot otomatisasi harian untuk memaksimalkan perolehan **Merit** dan **Level** pada sistem Kultivasi Voratoon (`v2.voratoon.com`), dirancang untuk bersaing di papan peringkat (*Leaderboard* bulanan) perebutan voucher Google Play Card / Steam Wallet.
+Bot otomatisasi harian untuk memaksimalkan perolehan **Merit** dan **Level** pada sistem Kultivasi Voratoon (`v8.voratoon.com`), dirancang untuk bersaing di papan peringkat (*Leaderboard* bulanan) perebutan voucher Google Play Card / Steam Wallet.
 
 ---
 
