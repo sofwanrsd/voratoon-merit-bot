@@ -25,6 +25,21 @@ from pathlib import Path
 BASE_API = "https://api.voratoon.com"
 ORIGIN = "https://v8.voratoon.com"
 ENV_FILE = Path(__file__).parent / ".env"
+CACHE_FILE = Path(__file__).parent / "claimed_chapters.json"
+
+def load_claimed_cache() -> dict:
+    if CACHE_FILE.exists():
+        try:
+            return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+def save_claimed_cache(cache: dict):
+    try:
+        CACHE_FILE.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[WARN] Gagal menyimpan cache bab: {e}")
 
 COMMENTS_POOL = [
     "Karakter utamanya semakin berkembang sangat baik di sini",
@@ -202,23 +217,53 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
     else:
         print("\n[1/3] Login harian sudah selesai hari ini.")
 
-    # 3. Chapter Reads Reward
+    # 3. Chapter Reads Reward (Dynamic Multi-Series Crawler with Cache)
     ch_rem = daily.get("chapters", {}).get("remaining", 50)
     if ch_rem > 0:
         print(f"\n[2/3] Membaca Chapter (Sisa kuota: {ch_rem})...")
-        chapters = fetch_series_chapters(target_series_slug, limit=ch_rem)
-        if not chapters:
-            print("  [WARN] Gagal mengambil daftar bab. Melewati langkah ini.")
-        else:
-            chap_ok = 0
-            for cid in chapters:
-                st_c, _ = api_request("/cultivation/rewards/chapter", token=token, method="POST", body={"targetId": cid, "mode": "chapter"})
+        cache = load_claimed_cache()
+        acc_key = mask_token
+        claimed_set = set(cache.get(acc_key, []))
+
+        # Discover popular series pool to guarantee fresh, unread chapters
+        st_p, res_p = api_request("/popular")
+        series_pool = []
+        if st_p == 200 and "data" in res_p and isinstance(res_p["data"], list):
+            for s in res_p["data"]:
+                slug = s.get("data", {}).get("slug")
+                if slug and slug not in series_pool:
+                    series_pool.append(slug)
+        if not series_pool:
+            series_pool = [target_series_slug]
+
+        chap_ok = 0
+        for slug in series_pool:
+            if chap_ok >= ch_rem:
+                break
+            chapters = fetch_series_chapters(slug, limit=300)
+            if not chapters:
+                continue
+
+            for cid in reversed(chapters):
+                if cid in claimed_set:
+                    continue
+                st_c, res_c = api_request("/cultivation/rewards/chapter", token=token, method="POST", body={"targetId": cid, "mode": "chapter"})
                 if st_c in [200, 201]:
-                    chap_ok += 1
-                time.sleep(random.uniform(0.2, 0.5) * delay_mult)
-            print(f"  [OK] Selesai: {chap_ok}/{len(chapters)} bab berhasil diklaim.")
+                    d = res_c.get("data", {})
+                    if not d.get("alreadyAwarded") and d.get("reward", {}).get("awardedMerit", 0) > 0:
+                        chap_ok += 1
+                        claimed_set.add(cid)
+                    else:
+                        claimed_set.add(cid)
+                if chap_ok >= ch_rem:
+                    break
+                time.sleep(random.uniform(0.1, 0.25) * delay_mult)
+
+        cache[acc_key] = list(claimed_set)
+        save_claimed_cache(cache)
+        print(f"  [OK] Selesai: {chap_ok}/{ch_rem} bab segar berhasil diklaim (+{chap_ok * 10} Merit).")
     else:
-        print("\n[2/3] Kuota baca 50 chapter sudah maksimal hari ini.")
+        print("\n[2/3] Kuota baca 50 chapter sudah maksimal hari ini (50/50).")
 
     # 4. Comments Reward
     com_rem = daily.get("comments", {}).get("remaining", 5)
