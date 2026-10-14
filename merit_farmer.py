@@ -286,14 +286,19 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
             s_id = item.get("id")
             s_slug = item.get("data", {}).get("slug", target_series_slug)
             
-            # Fetch recent chapters so the review is posted directly inside that specific chapter!
-            chaps = fetch_series_chapters(s_slug, limit=5)
-            c_id = chaps[0] if chaps else None
+            # Fetch recent chapters: wajib komentar di dalam chapter spesifik!
+            chaps = fetch_series_chapters(s_slug, limit=10)
+            if not chaps:
+                continue
+            # Pick a recent chapter randomly among the top 5
+            c_id = random.choice(chaps[:min(5, len(chaps))])
             
             text = selected_comments[idx]
-            body = {"seriesId": s_id, "content": text}
-            if c_id:
-                body["chapterId"] = c_id
+            body = {
+                "seriesId": s_id,
+                "chapterId": c_id,
+                "content": text
+            }
 
             st_post, res_post = api_request("/comments", token=token, method="POST", body=body)
             if st_post in [200, 201] and "data" in res_post and "id" in res_post["data"]:
@@ -302,8 +307,7 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
                 st_claim, _ = api_request("/cultivation/rewards/comment", token=token, method="POST", body={"targetId": cid})
                 if st_claim in [200, 201]:
                     comm_ok += 1
-                    target_label = f"Bab {c_id}" if c_id else "Series"
-                    print(f"  [OK] Komentar #{comm_ok} di {s_slug} ({target_label}): \"{text[:45]}...\"")
+                    print(f"  [OK] Komentar #{comm_ok} di {s_slug} [Chapter {c_id}]: \"{text[:45]}...\"")
             time.sleep(random.uniform(0.8, 1.5) * delay_mult)
 
         print(f"  [OK] Selesai: {comm_ok}/{len(chosen_series)} komentar bab berhasil diklaim (+{comm_ok * 15} Merit).")
