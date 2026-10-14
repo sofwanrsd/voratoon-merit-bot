@@ -288,11 +288,52 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
     if st_f == 200:
         fd = final_me.get("data", {})
         f_daily = fd.get("daily", {})
+        gained = fd.get("merit", 0) - c_data.get("merit", 0)
         print("\n" + "-" * 60)
-        print(f"[STATUS] Level {fd.get('level')} | Total Merit {fd.get('merit')} (+{fd.get('merit', 0) - c_data.get('merit', 0)})")
+        print(f"[STATUS] Level {fd.get('level')} | Total Merit {fd.get('merit')} (+{gained})")
         print(f"[STATUS] Hasil Hari Ini: Login {f_daily.get('login', {}).get('used')}/{f_daily.get('login', {}).get('limit')} | "
               f"Bab {f_daily.get('chapters', {}).get('used')}/{f_daily.get('chapters', {}).get('limit')} | "
               f"Komen {f_daily.get('comments', {}).get('used')}/{f_daily.get('comments', {}).get('limit')}")
+        return {
+            "level": fd.get("level"),
+            "merit": fd.get("merit"),
+            "gained": gained,
+            "tier": fd.get("tier", {}).get("name", "Commoner"),
+            "daily": f_daily,
+            "username": fd.get("username", "Member")
+        }
+    return None
+
+def send_telegram_alert(text: str):
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token and Path("/root/.hermes/.env").exists():
+        with open("/root/.hermes/.env", "r") as f:
+            for line in f:
+                if line.startswith("TELEGRAM_BOT_TOKEN="):
+                    token = line.strip().split("=", 1)[1].strip('"\'')
+    if not token:
+        return
+
+    targets = [
+        {"chat_id": "5678748710"},
+        {"chat_id": "-1004385053126", "thread_id": 572}
+    ]
+    for tgt in targets:
+        try:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {
+                "chat_id": tgt["chat_id"],
+                "text": text,
+                "parse_mode": "Markdown"
+            }
+            if "thread_id" in tgt:
+                payload["message_thread_id"] = int(tgt["thread_id"])
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10):
+                pass
+        except Exception as e:
+            print(f"[WARN] Gagal kirim notifikasi Telegram: {e}")
 
 def main():
     args = parse_args()
@@ -310,23 +351,45 @@ def main():
     target_id, target_slug = discover_series(args.series)
     print(f"[*] Target Series: {target_slug} (ID: {target_id})")
 
+    results = []
     # 1. Farm individual quotas for all accounts
     for idx, token in enumerate(tokens, 1):
         try:
-            farm_account(token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
+            res = farm_account(token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
+            if res:
+                results.append((idx, res))
         except Exception as e:
             print(f"[ERROR] Masalah pada akun #{idx}: {e}")
 
     # 2. If helper account exists, run symbiotic auto-like boost for primary account
+    boost_success = False
     if not args.status_only and not args.no_boost and primary_token and helper_token and primary_token != helper_token:
         try:
             boost_helper_likes(primary_token, helper_token, target_likes=50)
+            boost_success = True
         except Exception as e:
             print(f"[ERROR] Masalah saat helper like boost: {e}")
 
     print("\n" + "=" * 60)
     print("[OK] Seluruh antrean akun dan auto-boost selesai diproses.")
     print("=" * 60)
+
+    # 3. Kirim notifikasi Telegram otomatis
+    if not args.status_only and results:
+        lines = ["*Laporan Harian Voratoon Merit Auto-Maxer*", ""]
+        for idx, r in results:
+            role = "Akun Utama" if idx == 1 else f"Akun Helper #{idx - 1}"
+            d = r.get("daily", {})
+            lines.append(f"*{role}:*")
+            lines.append(f"- Level: {r.get('level')} ({r.get('tier')})")
+            lines.append(f"- Total Merit: {r.get('merit'):,} (+{r.get('gained')})")
+            lines.append(f"- Kuota: Login {d.get('login', {}).get('used')}/{d.get('login', {}).get('limit')} | Bab {d.get('chapters', {}).get('used')}/{d.get('chapters', {}).get('limit')} | Komen {d.get('comments', {}).get('used')}/{d.get('comments', {}).get('limit')}")
+            lines.append("")
+        if boost_success:
+            lines.append("- Resonansi Qi: 50/50 Like Terverifikasi (+100 Merit)")
+            lines.append("")
+        lines.append("Status: Otomatisasi berjalan lancar pada crontab VPS.")
+        send_telegram_alert("\n".join(lines))
 
 if __name__ == "__main__":
     main()
