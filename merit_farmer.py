@@ -42,24 +42,31 @@ def save_claimed_cache(cache: dict):
         print(f"[WARN] Gagal menyimpan cache bab: {e}")
 
 COMMENTS_POOL = [
-    "Karakter utamanya semakin berkembang sangat baik di sini",
-    "Alur ceritanya tidak membosankan dan selalu seru dibaca",
-    "Kualitas art dan visual komik ini sangat memanjakan mata",
-    "Pertarungan di bagian ini sangat menegangkan dan memuaskan",
-    "Terima kasih untuk mimin yang selalu update dengan cepat",
-    "Plot twist di chapter ini bener-bener gak ketebak sama sekali",
-    "Gak sabar nunggu kelanjutan cerita di chapter berikutnya",
-    "Panel terakhir bener-bener bikin penasaran kelanjutannya",
-    "Visualisasi jurus dan efek pertarungannya keren banget",
-    "Pembangunan karakter sampingannya juga dapet banget feelnya",
-    "Semoga mimin sehat selalu dan lancar terus garapannya",
-    "Bagus banget ceritanya, sangat rekomendasi buat dibaca maraton",
-    "Art style makin ke sini makin rapi dan detail banget",
-    "Konflik ceritanya makin matang dan seru buat diikutin",
-    "Gokil sih ini adaptasinya rapi banget terjemahannya",
-    "Setiap minggunya selalu nungguin rilis komik ini",
-    "Pengembangan dunianya detail dan seru untuk diikuti",
-    "Makin seru aja tensi ceritanya, auto bookmark"
+    "Art style di chapter ini makin memanjakan mata, eksekusi visualnya gokil",
+    "Alur ceritanya bener-bener gak ngebosenin, selalu seru tiap babnya",
+    "Panel terakhir bener-bener bikin penasaran sama kelanjutan ceritanya",
+    "Pertarungan di bagian ini seru dan intens banget, puas bacanya",
+    "Karakter utamanya cerdas banget ngambil keputusan di situasi begini",
+    "Pacing ceritanya rapi, perkembangan karakternya dapet banget feelnya",
+    "Terjemahannya enak dibaca dan rapi, makasih banyak min udah update",
+    "Plot twistnya mantap, gak nyangka bakal dibawa ke arah sini alurnya",
+    "Selalu seru nungguin update tiap minggu, makin greget ceritanya",
+    "Visual efek pertarungannya juara sih, berasa banget tensi adegannya",
+    "Bagus banget pendalaman dunianya, salah satu komik terbaik saat ini",
+    "Gak sabar nunggu kelanjutan aksinya di chapter berikutnya min",
+    "Kombinasi aksi dan tensi ceritanya dapet banget di bab ini",
+    "Detail gambarnya makin rapi, ekspresi karakternya hidup banget",
+    "Ceritanya konsisten bagus dari awal rilis, auto masuk list favorit",
+    "Koreografi pertarungannya rapi banget, enak diliat gerakannya",
+    "Karakter utamanya sat-set banget gak banyak drama, suka tipe begini",
+    "Semangat terus min garap komik ini, sehat selalu tim translator",
+    "Komplit banget ceritanya, ada selipan santai tapi aksinya tetep dapet",
+    "Kualitas gambar jernih banget, panel aksinya bener-bener memuaskan",
+    "Gak pernah bosen baca komik ini, selalu ada kejutan di tiap chapter",
+    "Ekspektasi terbayar lunas di bab ini, klimaks ceritanya keren banget",
+    "Pengembangan karakternya terasa natural dan gak dipaksakan",
+    "Tiap minggu selalu jadi komik pertama yang gw buka pas rilis",
+    "Pertarungan antar karakternya berbobot, gak cuma modal teriak jurus doang"
 ]
 
 SERIES_POOL = [4718, 7133, 8261, 4541, 5501, 1658, 6490, 1880, 7488, 797]
@@ -161,31 +168,28 @@ def fetch_series_chapters(series_slug: str, limit: int = 50) -> list[int]:
         return chapters[:limit]
     return []
 
-def boost_helper_likes(primary_token: str, helper_token: str, target_likes: int = 50):
+def boost_helper_likes(helper_token: str, target_comment_ids: list[int]):
+    if not target_comment_ids:
+        return
     print("\n" + "=" * 60)
-    print("[*] Menjalankan Helper Booster: Like Komentar Silang (Resonansi Qi)")
+    print(f"[*] Helper menyukai {len(target_comment_ids)} komentar bab akun utama...")
     print("=" * 60)
     
     likes_done = 0
-    for i in range(target_likes):
-        sid = random.choice(SERIES_POOL)
-        phrase = random.choice(COMMENTS_POOL) + f" #{random.randint(100, 999)}"
-        
-        st_p, res_p = api_request("/comments", token=primary_token, method="POST", body={"seriesId": sid, "content": phrase})
-        if st_p in [200, 201] and "data" in res_p and "id" in res_p["data"]:
-            cid = res_p["data"]["id"]
-            st_u, _ = api_request(f"/comments/{cid}/upvote", token=helper_token, method="POST", body={})
-            if st_u in [200, 201]:
-                likes_done += 1
-        time.sleep(0.18)
+    for cid in target_comment_ids:
+        st_u, _ = api_request(f"/comments/{cid}/upvote", token=helper_token, method="POST", body={})
+        if st_u in [200, 201]:
+            likes_done += 1
+        time.sleep(0.3)
 
-    print(f"[OK] Helper Booster Selesai: {likes_done}/{target_likes} like berhasil disuntikkan!")
+    print(f"[OK] Helper Selesai: {likes_done}/{len(target_comment_ids)} komentar disukai secara natural.")
 
-def farm_account(token: str, target_series_id: int, target_series_slug: str, delay_mult: float, status_only: bool = False):
+def farm_account(token: str, target_series_id: int, target_series_slug: str, delay_mult: float, status_only: bool = False) -> list[int]:
     mask_token = token[:8] + "..." + token[-6:] if len(token) > 14 else "token"
     print("\n" + "=" * 60)
     print(f"[*] Memproses Akun [{mask_token}]")
     print("=" * 60)
+    created_comment_ids = []
 
     # 1. Profile Status
     st, me = api_request("/cultivation/me", token=token)
@@ -204,7 +208,7 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
 
     if status_only:
         print("[INFO] Mode --status-only aktif, klaim dilewati.")
-        return
+        return [], None
 
     # 2. Daily Login Reward
     if daily.get("login", {}).get("remaining", 1) > 0:
@@ -265,25 +269,49 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
     else:
         print("\n[2/3] Kuota baca 50 chapter sudah maksimal hari ini (50/50).")
 
-    # 4. Comments Reward
+    # 4. Comments Reward (Natural Chapter Reviews Across 5 Different Popular Comics)
     com_rem = daily.get("comments", {}).get("remaining", 5)
     if com_rem > 0:
         print(f"\n[3/3] Mengirim & Mengklaim Komentar (Sisa kuota: {com_rem})...")
+        st_p, res_p = api_request("/popular")
+        series_pool = res_p.get("data", []) if (st_p == 200 and isinstance(res_p.get("data"), list)) else []
+        
+        # Pick distinct series so we NEVER spam 1 comic
+        chosen_series = random.sample(series_pool, min(com_rem, len(series_pool))) if series_pool else []
         selected_comments = random.sample(COMMENTS_POOL, min(com_rem, len(COMMENTS_POOL)))
         comm_ok = 0
-        for text in selected_comments:
-            st_post, res_post = api_request("/comments", token=token, method="POST", body={"seriesId": target_series_id, "content": text})
+
+        for idx in range(len(chosen_series)):
+            item = chosen_series[idx]
+            s_id = item.get("id")
+            s_slug = item.get("data", {}).get("slug", target_series_slug)
+            
+            # Fetch recent chapters so the review is posted directly inside that specific chapter!
+            chaps = fetch_series_chapters(s_slug, limit=5)
+            c_id = chaps[0] if chaps else None
+            
+            text = selected_comments[idx]
+            body = {"seriesId": s_id, "content": text}
+            if c_id:
+                body["chapterId"] = c_id
+
+            st_post, res_post = api_request("/comments", token=token, method="POST", body=body)
             if st_post in [200, 201] and "data" in res_post and "id" in res_post["data"]:
                 cid = res_post["data"]["id"]
+                created_comment_ids.append(cid)
                 st_claim, _ = api_request("/cultivation/rewards/comment", token=token, method="POST", body={"targetId": cid})
                 if st_claim in [200, 201]:
                     comm_ok += 1
-            time.sleep(random.uniform(0.7, 1.4) * delay_mult)
-        print(f"  [OK] Selesai: {comm_ok}/{len(selected_comments)} komentar berhasil diklaim.")
+                    target_label = f"Bab {c_id}" if c_id else "Series"
+                    print(f"  [OK] Komentar #{comm_ok} di {s_slug} ({target_label}): \"{text[:45]}...\"")
+            time.sleep(random.uniform(0.8, 1.5) * delay_mult)
+
+        print(f"  [OK] Selesai: {comm_ok}/{len(chosen_series)} komentar bab berhasil diklaim (+{comm_ok * 15} Merit).")
     else:
-        print("\n[3/3] Kuota 5 komentar sudah maksimal hari ini.")
+        print("\n[3/3] Kuota 5 komentar sudah maksimal hari ini (5/5).")
 
     # 5. Final Status
+    result_data = None
     st_f, final_me = api_request("/cultivation/me", token=token)
     if st_f == 200:
         fd = final_me.get("data", {})
@@ -294,7 +322,7 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
         print(f"[STATUS] Hasil Hari Ini: Login {f_daily.get('login', {}).get('used')}/{f_daily.get('login', {}).get('limit')} | "
               f"Bab {f_daily.get('chapters', {}).get('used')}/{f_daily.get('chapters', {}).get('limit')} | "
               f"Komen {f_daily.get('comments', {}).get('used')}/{f_daily.get('comments', {}).get('limit')}")
-        return {
+        result_data = {
             "level": fd.get("level"),
             "merit": fd.get("merit"),
             "gained": gained,
@@ -302,7 +330,8 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
             "daily": f_daily,
             "username": fd.get("username", "Member")
         }
-    return None
+
+    return created_comment_ids, result_data
 
 def send_telegram_alert(text: str):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -332,8 +361,8 @@ def send_telegram_alert(text: str):
             req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=10):
                 pass
-        except Exception as e:
-            print(f"[WARN] Gagal kirim notifikasi Telegram: {e}")
+        except Exception:
+            pass
 
 def main():
     args = parse_args()
@@ -349,24 +378,26 @@ def main():
     print(f"[*] Ditemukan {len(tokens)} akun untuk diproses.")
 
     target_id, target_slug = discover_series(args.series)
-    print(f"[*] Target Series: {target_slug} (ID: {target_id})")
+    print(f"[*] Target Series Default: {target_slug} (ID: {target_id})")
 
+    primary_created_comments = []
     results = []
+
     # 1. Farm individual quotas for all accounts
     for idx, token in enumerate(tokens, 1):
         try:
-            res = farm_account(token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
+            cids, res = farm_account(token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
+            if idx == 1 and cids:
+                primary_created_comments = cids
             if res:
                 results.append((idx, res))
         except Exception as e:
             print(f"[ERROR] Masalah pada akun #{idx}: {e}")
 
-    # 2. If helper account exists, run symbiotic auto-like boost for primary account
-    boost_success = False
-    if not args.status_only and not args.no_boost and primary_token and helper_token and primary_token != helper_token:
+    # 2. If helper account exists, like the primary account's natural chapter reviews
+    if not args.status_only and not args.no_boost and helper_token and primary_created_comments:
         try:
-            boost_helper_likes(primary_token, helper_token, target_likes=50)
-            boost_success = True
+            boost_helper_likes(helper_token, primary_created_comments)
         except Exception as e:
             print(f"[ERROR] Masalah saat helper like boost: {e}")
 
@@ -384,9 +415,6 @@ def main():
             lines.append(f"- Level: {r.get('level')} ({r.get('tier')})")
             lines.append(f"- Total Merit: {r.get('merit'):,} (+{r.get('gained')})")
             lines.append(f"- Kuota: Login {d.get('login', {}).get('used')}/{d.get('login', {}).get('limit')} | Bab {d.get('chapters', {}).get('used')}/{d.get('chapters', {}).get('limit')} | Komen {d.get('comments', {}).get('used')}/{d.get('comments', {}).get('limit')}")
-            lines.append("")
-        if boost_success:
-            lines.append("- Resonansi Qi: 50/50 Like Terverifikasi (+100 Merit)")
             lines.append("")
         lines.append("Status: Otomatisasi berjalan lancar pada crontab VPS.")
         send_telegram_alert("\n".join(lines))
