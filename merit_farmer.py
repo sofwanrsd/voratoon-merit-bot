@@ -339,11 +339,15 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
 
 def send_telegram_alert(text: str):
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token and Path("/root/.hermes/.env").exists():
-        with open("/root/.hermes/.env", "r") as f:
-            for line in f:
-                if line.startswith("TELEGRAM_BOT_TOKEN="):
-                    token = line.strip().split("=", 1)[1].strip('"\'')
+    try:
+        hermes_env = Path("/root/.hermes/.env")
+        if not token and hermes_env.exists():
+            with open(hermes_env, "r") as f:
+                for line in f:
+                    if line.startswith("TELEGRAM_BOT_TOKEN="):
+                        token = line.strip().split("=", 1)[1].strip('"\'')
+    except Exception:
+        pass
     if not token:
         return
 
