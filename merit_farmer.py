@@ -81,6 +81,7 @@ def parse_args():
     parser.add_argument("-d", "--delay-mult", type=float, default=1.0, help="Delay multiplier for request intervals")
     parser.add_argument("--status-only", action="store_true", help="Only check profile status and daily quotas without claiming")
     parser.add_argument("--no-boost", action="store_true", help="Disable helper account auto-like booster")
+    parser.add_argument("--no-jitter", action="store_true", help="Nonaktifkan jeda acak di awal eksekusi")
     return parser.parse_args()
 
 def load_tokens_config(cli_token: str = None) -> tuple[list[str], str, list[str]]:
@@ -187,25 +188,46 @@ def fetch_series_chapters(series_slug: str, limit: int = 500) -> list[dict]:
 def boost_helper_likes(helper_tokens: list[str], target_comment_ids: list[int]):
     if not target_comment_ids or not helper_tokens:
         return
+
+    # Rotasi Shift A (Ganjil) & Shift B (Genap)
+    import datetime
+    day_num = datetime.datetime.now().timetuple().tm_yday
+    shift_name = "Shift A" if day_num % 2 == 1 else "Shift B"
+    
+    # Bagi pool 20 helper jadi 2 kelompok
+    if len(helper_tokens) >= 20:
+        active_shift = helper_tokens[:10] if shift_name == "Shift A" else helper_tokens[10:20]
+    else:
+        active_shift = helper_tokens[:10]
+
     print("\n" + "=" * 60)
-    print(f"[*] Resonansi Qi: Memproses upvote dari {len(helper_tokens)} akun helper...")
+    print(f"[*] Resonansi Qi: Memproses upvote ({shift_name}: {len(active_shift)} Akun Helper Aktif)...")
     print("=" * 60)
 
     total_likes = 0
     # Voratoon limit: maksimal 50 like per hari (+100 Merit harian)
-    for h_idx, h_token in enumerate(helper_tokens, 1):
+    for h_idx, h_token in enumerate(active_shift, 1):
         if total_likes >= 50:
             print("[+] Target maksimal 50 Like (+100 Merit) harian telah terpenuhi!")
             break
+
+        # 1. Suntik like ke komentar utama
         for cid in target_comment_ids:
             if total_likes >= 50:
                 break
             st_u, _ = api_request(f"/comments/{cid}/upvote", token=h_token, method="POST", body={})
             if st_u in [200, 201]:
                 total_likes += 1
-            time.sleep(0.25)
+            time.sleep(0.2)
 
-    print(f"[OK] Selesai: {total_likes} like sukses disuntikkan ke komentar bab utama.")
+        # 2. Klaim login + 1 bab agar akun helper naik level & natural
+        try:
+            api_request("/cultivation/rewards/daily-login", token=h_token, method="POST", body={})
+            api_request("/cultivation/rewards/chapter", token=h_token, method="POST", body={"targetId": 235966, "mode": "chapter"})
+        except Exception:
+            pass
+
+    print(f"[OK] Selesai: {total_likes} like sukses disuntikkan oleh {shift_name}.")
 
 def farm_account(token: str, target_series_id: int, target_series_slug: str, delay_mult: float, status_only: bool = False) -> list[int]:
     mask_token = token[:8] + "..." + token[-6:] if len(token) > 14 else "token"
@@ -419,6 +441,12 @@ def main():
         print("[ERROR] Tidak ada token Voratoon yang ditemukan!")
         sys.exit(1)
 
+    # Human Jitter Delay (Acak 1-8 menit sebelum panen dimulai di cron)
+    if not args.status_only and not args.no_jitter:
+        jitter_s = random.randint(60, 480)
+        print(f"[*] Human Jitter Delay: Menunggu jeda acak {jitter_s} detik agar waktu eksekusi natural...")
+        time.sleep(jitter_s)
+
     print("=" * 60)
     print("Voratoon Cultivation Merit Auto-Maxer")
     print("=" * 60)
@@ -452,7 +480,7 @@ def main():
     print("[OK] Seluruh antrean akun dan auto-boost selesai diproses.")
     print("=" * 60)
 
-    # 3. Kirim notifikasi Telegram otomatis
+    # 3. Kirim notifikasi Telegram otomatis dengan status Leaderboard Nasional
     if not args.status_only and results:
         lines = ["*Laporan Harian Voratoon Merit Auto-Maxer*", ""]
         for idx, r in results:
@@ -463,6 +491,24 @@ def main():
             lines.append(f"- Total Merit: {r.get('merit'):,} (+{r.get('gained')})")
             lines.append(f"- Kuota: Login {d.get('login', {}).get('used')}/{d.get('login', {}).get('limit')} | Bab {d.get('chapters', {}).get('used')}/{d.get('chapters', {}).get('limit')} | Komen {d.get('comments', {}).get('used')}/{d.get('comments', {}).get('limit')}")
             lines.append("")
+
+        # Live Leaderboard Checking
+        try:
+            st_lb, res_lb = api_request("/rankings/users", token=primary_token)
+            if st_lb == 200:
+                my = res_lb.get("myRank", {})
+                r_pos = my.get("rank", "-")
+                w_merit = my.get("periodMerit", 0)
+                top1_merit = res_lb.get("data", [{}])[0].get("merit", 0)
+                diff = max(0, top1_merit - w_merit)
+                lines.append(f"*Status Leaderboard Mingguan:*")
+                lines.append(f"- Peringkat: *Rank #{r_pos}*")
+                lines.append(f"- Merit Mingguan: {w_merit:,}")
+                lines.append(f"- Selisih ke Top 1: {diff:,} Merit")
+                lines.append("")
+        except Exception:
+            pass
+
         lines.append("Status: Otomatisasi berjalan lancar pada crontab VPS.")
         send_telegram_alert("\n".join(lines))
 
