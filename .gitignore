@@ -5,3 +5,7 @@ __pycache__/
 .DS_Store
 *.txt
 claimed_chapters.json
+HELPER_ACCOUNTS.md
+helper_accounts.txt
+test_single_account.py
+batch_create_20.py

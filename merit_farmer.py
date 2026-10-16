@@ -83,14 +83,14 @@ def parse_args():
     parser.add_argument("--no-boost", action="store_true", help="Disable helper account auto-like booster")
     return parser.parse_args()
 
-def load_tokens_config(cli_token: str = None) -> tuple[list[str], str, str]:
+def load_tokens_config(cli_token: str = None) -> tuple[list[str], str, list[str]]:
     tokens = []
     t_primary = None
-    t_helper = None
+    helper_tokens = []
 
     if cli_token:
         tokens = [t.strip() for t in cli_token.split(",") if t.strip()]
-        return tokens, (tokens[0] if tokens else None), (tokens[1] if len(tokens) > 1 else None)
+        return tokens, (tokens[0] if tokens else None), tokens[1:]
 
     env_token = os.environ.get("VORATOON_TOKEN")
     if env_token:
@@ -106,15 +106,29 @@ def load_tokens_config(cli_token: str = None) -> tuple[list[str], str, str]:
                 elif line.startswith("ACCOUNT_1_TOKEN="):
                     t_primary = line.split("=", 1)[1].strip().strip('"').strip("'")
                 elif line.startswith("ACCOUNT_2_TOKEN="):
-                    t_helper = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    helper_tokens.append(line.split("=", 1)[1].strip().strip('"').strip("'"))
+
+    # Load helper tokens dari HELPER_ACCOUNTS.md jika ada
+    md_file = ENV_FILE.parent / "HELPER_ACCOUNTS.md"
+    if md_file.exists():
+        try:
+            with open(md_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("|") and "`oat_" in line:
+                        for part in line.split("|"):
+                            part = part.strip()
+                            if part.startswith("`oat_") and part.endswith("`"):
+                                h_tok = part.strip("`")
+                                if h_tok not in helper_tokens:
+                                    helper_tokens.append(h_tok)
+        except Exception:
+            pass
 
     if not t_primary and tokens:
         t_primary = tokens[0]
-    if not t_helper and len(tokens) > 1:
-        t_helper = tokens[1]
 
     unique_tokens = list(dict.fromkeys(tokens))
-    return unique_tokens, t_primary, t_helper
+    return unique_tokens, t_primary, helper_tokens
 
 def api_request(path: str, token: str = "", method: str = "GET", body: dict = None) -> tuple[int, dict]:
     url = f"{BASE_API}{path}"
@@ -161,28 +175,37 @@ def discover_series(fallback_slug: str = "magic-emperor") -> tuple[int, str]:
 
     return 4718, fallback_slug
 
-def fetch_series_chapters(series_slug: str, limit: int = 50) -> list[int]:
+def fetch_series_chapters(series_slug: str, limit: int = 500) -> list[dict]:
     st, res = api_request(f"/series/{series_slug}/chapters")
     if st == 200 and "data" in res and isinstance(res["data"], list):
-        chapters = [c["id"] for c in res["data"] if isinstance(c, dict) and "id" in c]
-        return chapters[:limit]
+        valid = [c for c in res["data"] if isinstance(c, dict) and "id" in c]
+        # Urutkan dari Chapter 1 naik ke atas (Ascending)
+        valid.sort(key=lambda x: x.get("data", {}).get("index", 0))
+        return valid[:limit]
     return []
 
-def boost_helper_likes(helper_token: str, target_comment_ids: list[int]):
-    if not target_comment_ids:
+def boost_helper_likes(helper_tokens: list[str], target_comment_ids: list[int]):
+    if not target_comment_ids or not helper_tokens:
         return
     print("\n" + "=" * 60)
-    print(f"[*] Helper menyukai {len(target_comment_ids)} komentar bab akun utama...")
+    print(f"[*] Resonansi Qi: Memproses upvote dari {len(helper_tokens)} akun helper...")
     print("=" * 60)
-    
-    likes_done = 0
-    for cid in target_comment_ids:
-        st_u, _ = api_request(f"/comments/{cid}/upvote", token=helper_token, method="POST", body={})
-        if st_u in [200, 201]:
-            likes_done += 1
-        time.sleep(0.3)
 
-    print(f"[OK] Helper Selesai: {likes_done}/{len(target_comment_ids)} komentar disukai secara natural.")
+    total_likes = 0
+    # Voratoon limit: maksimal 50 like per hari (+100 Merit harian)
+    for h_idx, h_token in enumerate(helper_tokens, 1):
+        if total_likes >= 50:
+            print("[+] Target maksimal 50 Like (+100 Merit) harian telah terpenuhi!")
+            break
+        for cid in target_comment_ids:
+            if total_likes >= 50:
+                break
+            st_u, _ = api_request(f"/comments/{cid}/upvote", token=h_token, method="POST", body={})
+            if st_u in [200, 201]:
+                total_likes += 1
+            time.sleep(0.25)
+
+    print(f"[OK] Selesai: {total_likes} like sukses disuntikkan ke komentar bab utama.")
 
 def farm_account(token: str, target_series_id: int, target_series_slug: str, delay_mult: float, status_only: bool = False) -> list[int]:
     mask_token = token[:8] + "..." + token[-6:] if len(token) > 14 else "token"
@@ -241,31 +264,46 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
             series_pool = [target_series_slug]
 
         chap_ok = 0
+        series_read_counts = {}
+        # Dynamic target range 52 - 60 chapter per hari
+        target_reads = max(ch_rem, random.randint(52, 60))
+
         for slug in series_pool:
-            if chap_ok >= ch_rem:
+            if chap_ok >= target_reads:
                 break
-            chapters = fetch_series_chapters(slug, limit=300)
+            chapters = fetch_series_chapters(slug, limit=500)
             if not chapters:
                 continue
 
-            for cid in reversed(chapters):
-                if cid in claimed_set:
+            for ch_item in chapters:
+                cid = ch_item.get("id")
+                ch_idx = ch_item.get("data", {}).get("index", "?")
+                if not cid or cid in claimed_set:
                     continue
+
                 st_c, res_c = api_request("/cultivation/rewards/chapter", token=token, method="POST", body={"targetId": cid, "mode": "chapter"})
                 if st_c in [200, 201]:
                     d = res_c.get("data", {})
                     if not d.get("alreadyAwarded") and d.get("reward", {}).get("awardedMerit", 0) > 0:
                         chap_ok += 1
-                        claimed_set.add(cid)
-                    else:
-                        claimed_set.add(cid)
-                if chap_ok >= ch_rem:
+                    claimed_set.add(cid)
+                    series_read_counts[slug] = series_read_counts.get(slug, 0) + 1
+
+                    # Auto-Bookmark jika sudah membaca > 50 chapter di komik ini
+                    if series_read_counts[slug] == 50:
+                        st_b, _ = api_request(f"/series/{slug}/bookmark", token=token, method="POST", body={})
+                        if st_b in [200, 201]:
+                            print(f"  [+] Auto-Bookmark aktif: Komik '{slug}' ditambahkan ke Bookmark (>50 bab dibaca)!")
+                else:
+                    claimed_set.add(cid)
+
+                if chap_ok >= target_reads:
                     break
                 time.sleep(random.uniform(0.1, 0.25) * delay_mult)
 
         cache[acc_key] = list(claimed_set)
         save_claimed_cache(cache)
-        print(f"  [OK] Selesai: {chap_ok}/{ch_rem} bab segar berhasil diklaim (+{chap_ok * 10} Merit).")
+        print(f"  [OK] Selesai: {chap_ok} bab segar dibaca dari Ch 1 (+{min(50, chap_ok) * 10} Merit kuota penuh).")
     else:
         print("\n[2/3] Kuota baca 50 chapter sudah maksimal hari ini (50/50).")
 
@@ -287,11 +325,12 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
             s_slug = item.get("data", {}).get("slug", target_series_slug)
             
             # Fetch recent chapters: wajib komentar di dalam chapter spesifik!
-            chaps = fetch_series_chapters(s_slug, limit=10)
+            chaps = fetch_series_chapters(s_slug, limit=20)
             if not chaps:
                 continue
-            # Pick a recent chapter randomly among the top 5
-            c_id = random.choice(chaps[:min(5, len(chaps))])
+            # Pick a chapter randomly among available chapters
+            ch_choice = random.choice(chaps[:min(10, len(chaps))])
+            c_id = ch_choice.get("id") if isinstance(ch_choice, dict) else ch_choice
             
             text = selected_comments[idx]
             body = {
@@ -374,7 +413,7 @@ def send_telegram_alert(text: str):
 
 def main():
     args = parse_args()
-    tokens, primary_token, helper_token = load_tokens_config(args.token)
+    tokens, primary_token, helper_tokens = load_tokens_config(args.token)
 
     if not tokens:
         print("[ERROR] Tidak ada token Voratoon yang ditemukan!")
@@ -383,7 +422,7 @@ def main():
     print("=" * 60)
     print("Voratoon Cultivation Merit Auto-Maxer")
     print("=" * 60)
-    print(f"[*] Ditemukan {len(tokens)} akun untuk diproses.")
+    print(f"[*] Ditemukan {len(tokens)} akun utama dan {len(helper_tokens)} akun helper.")
 
     target_id, target_slug = discover_series(args.series)
     print(f"[*] Target Series Default: {target_slug} (ID: {target_id})")
@@ -402,10 +441,10 @@ def main():
         except Exception as e:
             print(f"[ERROR] Masalah pada akun #{idx}: {e}")
 
-    # 2. If helper account exists, like the primary account's natural chapter reviews
-    if not args.status_only and not args.no_boost and helper_token and primary_created_comments:
+    # 2. If helper accounts exist, like the primary account's natural chapter reviews
+    if not args.status_only and not args.no_boost and helper_tokens and primary_created_comments:
         try:
-            boost_helper_likes(helper_token, primary_created_comments)
+            boost_helper_likes(helper_tokens, primary_created_comments)
         except Exception as e:
             print(f"[ERROR] Masalah saat helper like boost: {e}")
 
