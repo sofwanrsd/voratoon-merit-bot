@@ -131,6 +131,14 @@ def load_tokens_config(cli_token: str = None) -> tuple[list[str], str, list[str]
     unique_tokens = list(dict.fromkeys(tokens))
     return unique_tokens, t_primary, helper_tokens
 
+TOR_OPENER = None
+try:
+    import socks
+    from sockshandler import SocksiPyHandler
+    TOR_OPENER = urllib.request.build_opener(SocksiPyHandler(socks.SOCKS5, "127.0.0.1", 9050))
+except Exception:
+    TOR_OPENER = None
+
 def api_request(path: str, token: str = "", method: str = "GET", body: dict = None) -> tuple[int, dict]:
     url = f"{BASE_API}{path}"
     headers = {
@@ -153,6 +161,15 @@ def api_request(path: str, token: str = "", method: str = "GET", body: dict = No
             res_body = resp.read().decode("utf-8")
             return resp.status, json.loads(res_body) if res_body else {}
     except urllib.error.HTTPError as e:
+        # Jika terkena 429 rate-limit, langsung fallback otomatis ke Tor SOCKS5
+        if e.code == 429 and TOR_OPENER:
+            try:
+                with TOR_OPENER.open(req, timeout=20) as resp:
+                    res_body = resp.read().decode("utf-8")
+                    return resp.status, json.loads(res_body) if res_body else {}
+            except Exception:
+                pass
+
         err_body = e.read().decode("utf-8") if e.fp else ""
         try:
             return e.code, json.loads(err_body)
