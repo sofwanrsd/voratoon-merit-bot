@@ -81,7 +81,7 @@ def parse_args():
     parser.add_argument("-d", "--delay-mult", type=float, default=1.0, help="Delay multiplier for request intervals")
     parser.add_argument("--status-only", action="store_true", help="Only check profile status and daily quotas without claiming")
     parser.add_argument("--no-boost", action="store_true", help="Disable helper account auto-like booster")
-    parser.add_argument("--no-jitter", action="store_true", help="Nonaktifkan jeda acak di awal eksekusi")
+    parser.add_argument("--jitter", action="store_true", help="Aktifkan jeda acak di awal eksekusi (default: mati/instan)")
     return parser.parse_args()
 
 def load_tokens_config(cli_token: str = None) -> tuple[list[str], str, list[str]]:
@@ -160,6 +160,41 @@ def api_request(path: str, token: str = "", method: str = "GET", body: dict = No
             return e.code, {"error": err_body}
     except Exception as e:
         return 500, {"error": str(e)}
+
+def discover_series_stream(fallback_slug: str = "magic-emperor", max_pages: int = 50):
+    """
+    Generator cerdas yang terus menyuplai judul komik segar melintasi ribuan komik di Voratoon.
+    Mencegah bot kehabisan bab komik karena komik populer sudah habis dibaca.
+    """
+    seen = set()
+
+    # 1. Prioritaskan komik populer
+    st_p, res_p = api_request("/popular")
+    if st_p == 200 and "data" in res_p and isinstance(res_p["data"], list):
+        for s in res_p["data"]:
+            slug = s.get("data", {}).get("slug")
+            if slug and slug not in seen:
+                seen.add(slug)
+                yield slug
+
+    # 2. Jelajahi katalog lengkap /series (lebih dari 10.000 komik)
+    for sort_mode in ["popularity", "bookmarks", "latest", "rating"]:
+        for page in range(1, max_pages + 1):
+            st, res = api_request(f"/series?page={page}&take=30&sort={sort_mode}")
+            if st == 200 and "data" in res and isinstance(res["data"], list):
+                items = res["data"]
+                if not items:
+                    break
+                for s in items:
+                    slug = s.get("data", {}).get("slug")
+                    if slug and slug not in seen:
+                        seen.add(slug)
+                        yield slug
+            else:
+                break
+
+    if fallback_slug not in seen:
+        yield fallback_slug
 
 def discover_series(fallback_slug: str = "magic-emperor") -> tuple[int, str]:
     st, res = api_request("/popular")
@@ -274,23 +309,13 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
         acc_key = mask_token
         claimed_set = set(cache.get(acc_key, []))
 
-        # Discover popular series pool to guarantee fresh, unread chapters
-        st_p, res_p = api_request("/popular")
-        series_pool = []
-        if st_p == 200 and "data" in res_p and isinstance(res_p["data"], list):
-            for s in res_p["data"]:
-                slug = s.get("data", {}).get("slug")
-                if slug and slug not in series_pool:
-                    series_pool.append(slug)
-        if not series_pool:
-            series_pool = [target_series_slug]
-
         chap_ok = 0
         series_read_counts = {}
         # Dynamic target range 52 - 60 chapter per hari
         target_reads = max(ch_rem, random.randint(52, 60))
 
-        for slug in series_pool:
+        # Mengalirkan ribuan komik secara dinamis sampai kuota harian terpenuhi 100%
+        for slug in discover_series_stream(target_series_slug, max_pages=50):
             if chap_ok >= target_reads:
                 break
             chapters = fetch_series_chapters(slug, limit=500)
@@ -441,10 +466,10 @@ def main():
         print("[ERROR] Tidak ada token Voratoon yang ditemukan!")
         sys.exit(1)
 
-    # Human Jitter Delay (Acak 1-8 menit sebelum panen dimulai di cron)
-    if not args.status_only and not args.no_jitter:
-        jitter_s = random.randint(60, 480)
-        print(f"[*] Human Jitter Delay: Menunggu jeda acak {jitter_s} detik agar waktu eksekusi natural...")
+    # Jitter delay opsional (hanya jika flag --jitter diaktifkan)
+    if args.jitter and not args.status_only:
+        jitter_s = random.randint(30, 180)
+        print(f"[*] Jitter Delay: Menunggu jeda acak {jitter_s} detik...")
         time.sleep(jitter_s)
 
     print("=" * 60)
