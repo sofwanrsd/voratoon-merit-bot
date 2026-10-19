@@ -534,23 +534,41 @@ def main():
     primary_created_comments = []
     results = []
 
-    # 1. Farm individual quotas for all accounts
-    for idx, token in enumerate(tokens, 1):
+    # 1. PRIORITAS #1: Eksekusi Akun Utama Kilat (<4 detik) untuk langsung mengunci 695 Merit & RANK #1
+    if primary_token:
+        print("[*] MEMPROSES AKUN UTAMA (PRIORITAS TINGGI)...")
+        try:
+            cids, res = farm_account(primary_token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
+            if cids:
+                primary_created_comments = cids
+            if res:
+                results.append((1, res))
+
+            # LANGSUNG SUNTIK 50 LIKES KE AKUN UTAMA DETIK INI JUGA (TANPA MENUNGGU AKUN LAIN!)
+            if not args.status_only and not args.no_boost and helper_tokens and primary_created_comments:
+                print("\n[*] LANGSUNG MENYUNTIK 50 LIKE HELPER KE AKUN UTAMA...")
+                boost_helper_likes(helper_tokens, primary_created_comments)
+
+                # Konfirmasi Peringkat Akun Utama Langsung di Detik Awal
+                try:
+                    st_lb, res_lb = api_request("/rankings/users", token=primary_token)
+                    if st_lb == 200:
+                        my = res_lb.get("myRank", {})
+                        print(f"\n[👑 TAHTA] AKUN UTAMA SUKSES MAKSIMAL! Peringkat: Rank #{my.get('rank')} ({my.get('periodMerit'):,} Weekly Merit)!")
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[ERROR] Masalah pada akun utama: {e}")
+
+    # 2. PROSES AKUN-AKUN HELPER BERIKUTNYA
+    other_tokens = tokens[1:]
+    for idx, token in enumerate(other_tokens, 2):
         try:
             cids, res = farm_account(token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
-            if idx == 1 and cids:
-                primary_created_comments = cids
             if res:
                 results.append((idx, res))
         except Exception as e:
             print(f"[ERROR] Masalah pada akun #{idx}: {e}")
-
-    # 2. If helper accounts exist, like the primary account's natural chapter reviews
-    if not args.status_only and not args.no_boost and helper_tokens and primary_created_comments:
-        try:
-            boost_helper_likes(helper_tokens, primary_created_comments)
-        except Exception as e:
-            print(f"[ERROR] Masalah saat helper like boost: {e}")
 
     print("\n" + "=" * 60)
     print("[OK] Seluruh antrean akun dan auto-boost selesai diproses.")
