@@ -131,6 +131,15 @@ def load_tokens_config(cli_token: str = None) -> tuple[list[str], str, list[str]
     unique_tokens = list(dict.fromkeys(tokens))
     return unique_tokens, t_primary, helper_tokens
 
+PROXY_OPENER = None
+try:
+    import socks
+    from sockshandler import SocksiPyHandler
+    # 1. Prioritaskan Tunnel Azure Jakarta port 1088 (Ultra-fast 15ms latency, IP fresh)
+    PROXY_OPENER = urllib.request.build_opener(SocksiPyHandler(socks.SOCKS5, "127.0.0.1", 1088))
+except Exception:
+    PROXY_OPENER = None
+
 TOR_OPENER = None
 try:
     import socks
@@ -156,20 +165,45 @@ def api_request(path: str, token: str = "", method: str = "GET", body: dict = No
         data = json.dumps(body).encode("utf-8")
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
+
+    # 1. Gunakan Tunnel Azure Jakarta langsung (kecepatan kilat 15ms, anti-delay, anti-429)
+    if PROXY_OPENER:
+        try:
+            with PROXY_OPENER.open(req, timeout=10) as resp:
+                res_body = resp.read().decode("utf-8")
+                return resp.status, json.loads(res_body) if res_body else {}
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                err_body = e.read().decode("utf-8") if e.fp else ""
+                try:
+                    return e.code, json.loads(err_body)
+                except Exception:
+                    return e.code, {"error": err_body}
+        except Exception:
+            pass
+
+    # 2. Fallback ke Tor SOCKS5 jika Azure tunnel bermasalah
+    if TOR_OPENER:
+        try:
+            with TOR_OPENER.open(req, timeout=15) as resp:
+                res_body = resp.read().decode("utf-8")
+                return resp.status, json.loads(res_body) if res_body else {}
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                err_body = e.read().decode("utf-8") if e.fp else ""
+                try:
+                    return e.code, json.loads(err_body)
+                except Exception:
+                    return e.code, {"error": err_body}
+        except Exception:
+            pass
+
+    # 3. Fallback langsung direct
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             res_body = resp.read().decode("utf-8")
             return resp.status, json.loads(res_body) if res_body else {}
     except urllib.error.HTTPError as e:
-        # Jika terkena 429 rate-limit, langsung fallback otomatis ke Tor SOCKS5
-        if e.code == 429 and TOR_OPENER:
-            try:
-                with TOR_OPENER.open(req, timeout=20) as resp:
-                    res_body = resp.read().decode("utf-8")
-                    return resp.status, json.loads(res_body) if res_body else {}
-            except Exception:
-                pass
-
         err_body = e.read().decode("utf-8") if e.fp else ""
         try:
             return e.code, json.loads(err_body)
@@ -270,7 +304,7 @@ def boost_helper_likes(helper_tokens: list[str], target_comment_ids: list[int]):
             st_u, _ = api_request(f"/comments/{cid}/upvote", token=h_token, method="POST", body={})
             if st_u in [200, 201]:
                 total_likes += 1
-            time.sleep(0.2)
+            time.sleep(0.04)
 
         # 2. Klaim login + 1 bab agar akun helper naik level & natural
         try:
@@ -363,7 +397,7 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
 
                 if chap_ok >= target_reads:
                     break
-                time.sleep(random.uniform(0.1, 0.25) * delay_mult)
+                time.sleep(random.uniform(0.02, 0.05) * delay_mult)
 
         cache[acc_key] = list(claimed_set)
         save_claimed_cache(cache)
@@ -411,7 +445,7 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
                 if st_claim in [200, 201]:
                     comm_ok += 1
                     print(f"  [OK] Komentar #{comm_ok} di {s_slug} [Chapter {c_id}]: \"{text[:45]}...\"")
-            time.sleep(random.uniform(0.8, 1.5) * delay_mult)
+            time.sleep(random.uniform(0.1, 0.25) * delay_mult)
 
         print(f"  [OK] Selesai: {comm_ok}/{len(chosen_series)} komentar bab berhasil diklaim (+{comm_ok * 15} Merit).")
     else:
