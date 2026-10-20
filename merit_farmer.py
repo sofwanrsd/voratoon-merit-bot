@@ -280,19 +280,21 @@ def boost_helper_likes(helper_tokens: list[str], target_comment_ids: list[int]):
     day_num = datetime.datetime.now().timetuple().tm_yday
     shift_name = "Shift A" if day_num % 2 == 1 else "Shift B"
     
-    # Bagi pool 20 helper jadi 2 kelompok
+    # Prioritaskan active shift, lalu fallback ke semua helper lainnya agar PASTI mencapai 50 like!
     if len(helper_tokens) >= 20:
         active_shift = helper_tokens[:10] if shift_name == "Shift A" else helper_tokens[10:20]
+        backup_shift = helper_tokens[10:20] if shift_name == "Shift A" else helper_tokens[:10]
+        ordered_helpers = active_shift + backup_shift + helper_tokens[20:]
     else:
-        active_shift = helper_tokens[:10]
+        ordered_helpers = helper_tokens
 
     print("\n" + "=" * 60)
-    print(f"[*] Resonansi Qi: Memproses upvote ({shift_name}: {len(active_shift)} Akun Helper Aktif)...")
+    print(f"[*] Resonansi Qi: Memproses upvote ({shift_name}: target 50 Like)...")
     print("=" * 60)
 
     total_likes = 0
     # Voratoon limit: maksimal 50 like per hari (+100 Merit harian)
-    for h_idx, h_token in enumerate(active_shift, 1):
+    for h_idx, h_token in enumerate(ordered_helpers, 1):
         if total_likes >= 50:
             print("[+] Target maksimal 50 Like (+100 Merit) harian telah terpenuhi!")
             break
@@ -313,7 +315,7 @@ def boost_helper_likes(helper_tokens: list[str], target_comment_ids: list[int]):
         except Exception:
             pass
 
-    print(f"[OK] Selesai: {total_likes} like sukses disuntikkan oleh {shift_name}.")
+    print(f"[OK] Selesai: {total_likes}/50 like sukses disuntikkan!")
 
 def farm_account(token: str, target_series_id: int, target_series_slug: str, delay_mult: float, status_only: bool = False) -> list[int]:
     mask_token = token[:8] + "..." + token[-6:] if len(token) > 14 else "token"
@@ -409,8 +411,28 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
     com_rem = daily.get("comments", {}).get("remaining", 5)
     if com_rem > 0:
         print(f"\n[3/3] Mengirim & Mengklaim Komentar (Sisa kuota: {com_rem})...")
-        st_p, res_p = api_request("/popular")
-        series_pool = res_p.get("data", []) if (st_p == 200 and isinstance(res_p.get("data"), list)) else []
+        series_pool = []
+        for _ in range(3):
+            st_p, res_p = api_request("/popular")
+            if st_p == 200 and isinstance(res_p.get("data"), list) and res_p["data"]:
+                series_pool = res_p["data"]
+                break
+            time.sleep(1)
+
+        if not series_pool:
+            # Fallback komik populer jika /popular gagal/rate-limit
+            series_pool = [
+                {"id": 4718, "data": {"slug": "magic-emperor"}},
+                {"id": 7133, "data": {"slug": "solo-max-level-newbie"}},
+                {"id": 8261, "data": {"slug": "the-regressed-mercenarys-machinations"}},
+                {"id": 4541, "data": {"slug": "leveling-in-the-future-apex-future-martial-arts"}},
+                {"id": 5501, "data": {"slug": "nano-machine"}},
+                {"id": 1658, "data": {"slug": "disastrous-necromancer"}},
+                {"id": 6490, "data": {"slug": "revenge-of-the-iron-blooded-sword-hound"}},
+                {"id": 1880, "data": {"slug": "eleceed"}},
+                {"id": 7488, "data": {"slug": "swordmasters-youngest-son"}},
+                {"id": 8481, "data": {"slug": "the-ultimate-of-all-ages"}}
+            ]
         
         # Pick distinct series so we NEVER spam 1 comic
         chosen_series = random.sample(series_pool, min(com_rem, len(series_pool))) if series_pool else []
@@ -543,6 +565,12 @@ def main():
                 primary_created_comments = cids
             if res:
                 results.append((1, res))
+
+            # Jika cids kosong (misal komentar sudah dibuat sebelumnya), ambil 5 komentar terbaru dari profil
+            if not primary_created_comments:
+                st_uc, res_uc = api_request("/user/comments", token=primary_token)
+                if st_uc == 200 and isinstance(res_uc.get("data"), list):
+                    primary_created_comments = [c["id"] for c in res_uc["data"][:5] if "id" in c]
 
             # LANGSUNG SUNTIK 50 LIKES KE AKUN UTAMA DETIK INI JUGA (TANPA MENUNGGU AKUN LAIN!)
             if not args.status_only and not args.no_boost and helper_tokens and primary_created_comments:
