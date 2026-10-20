@@ -1,9 +1,6 @@
 name: Voratoon Daily Merit Farm
 
 on:
-  schedule:
-    # 17:01 UTC = 00:01 WIB (Waktu reset harian Voratoon)
-    - cron: '1 17 * * *'
   workflow_dispatch:
 
 jobs:
