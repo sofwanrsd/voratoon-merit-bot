@@ -276,12 +276,18 @@ def discover_series(fallback_slug: str = "magic-emperor") -> tuple[int, str]:
 
     return 4718, fallback_slug
 
+CHAPTERS_CACHE = {}
+
 def fetch_series_chapters(series_slug: str, limit: int = 500) -> list[dict]:
+    if series_slug in CHAPTERS_CACHE:
+        return CHAPTERS_CACHE[series_slug][:limit]
+
     st, res = api_request(f"/series/{series_slug}/chapters")
     if st == 200 and "data" in res and isinstance(res["data"], list):
         valid = [c for c in res["data"] if isinstance(c, dict) and "id" in c]
         # Urutkan dari Chapter 1 naik ke atas (Ascending)
         valid.sort(key=lambda x: x.get("data", {}).get("index", 0))
+        CHAPTERS_CACHE[series_slug] = valid
         return valid[:limit]
     return []
 
@@ -331,7 +337,7 @@ def boost_helper_likes(helper_tokens: list[str], target_comment_ids: list[int]):
 
     print(f"[OK] Selesai: {total_likes}/50 like sukses disuntikkan!")
 
-def farm_account(token: str, target_series_id: int, target_series_slug: str, delay_mult: float, status_only: bool = False) -> list[int]:
+def farm_account(token: str, target_series_id: int, target_series_slug: str, delay_mult: float, status_only: bool = False) -> tuple[list[int], dict | None]:
     mask_token = token[:8] + "..." + token[-6:] if len(token) > 14 else "token"
     print("\n" + "=" * 60)
     print(f"[*] Memproses Akun [{mask_token}]")
@@ -342,7 +348,7 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
     st, me = api_request("/cultivation/me", token=token)
     if st != 200:
         print(f"[ERROR] Autentikasi Gagal ({st}): Token mungkin kedaluwarsa.")
-        return
+        return [], None
 
     c_data = me.get("data", {})
     daily = c_data.get("daily", {})
