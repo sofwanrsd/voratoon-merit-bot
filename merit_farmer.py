@@ -148,7 +148,7 @@ try:
 except Exception:
     TOR_OPENER = None
 
-def api_request(path: str, token: str = "", method: str = "GET", body: dict = None) -> tuple[int, dict]:
+def api_request(path: str, token: str = "", method: str = "GET", body: dict = None, max_retries: int = 3) -> tuple[int, dict]:
     url = f"{BASE_API}{path}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -166,51 +166,65 @@ def api_request(path: str, token: str = "", method: str = "GET", body: dict = No
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
-    # 1. Gunakan Tunnel Azure Jakarta langsung (kecepatan kilat 15ms, anti-delay, anti-429)
-    if PROXY_OPENER:
-        try:
-            with PROXY_OPENER.open(req, timeout=10) as resp:
-                res_body = resp.read().decode("utf-8")
-                return resp.status, json.loads(res_body) if res_body else {}
-        except urllib.error.HTTPError as e:
-            if e.code != 429:
-                err_body = e.read().decode("utf-8") if e.fp else ""
-                try:
-                    return e.code, json.loads(err_body)
-                except Exception:
-                    return e.code, {"error": err_body}
-        except Exception:
-            pass
+    for attempt in range(max_retries):
+        status, res_body = 500, {}
 
-    # 2. Fallback ke Tor SOCKS5 jika Azure tunnel bermasalah
-    if TOR_OPENER:
-        try:
-            with TOR_OPENER.open(req, timeout=15) as resp:
-                res_body = resp.read().decode("utf-8")
-                return resp.status, json.loads(res_body) if res_body else {}
-        except urllib.error.HTTPError as e:
-            if e.code != 429:
-                err_body = e.read().decode("utf-8") if e.fp else ""
+        # 1. Gunakan Tunnel Azure Jakarta langsung (kecepatan kilat 15ms, anti-delay, anti-429)
+        if PROXY_OPENER:
+            try:
+                with PROXY_OPENER.open(req, timeout=10) as resp:
+                    raw = resp.read().decode("utf-8")
+                    status, res_body = resp.status, json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as e:
+                raw = e.read().decode("utf-8") if e.fp else ""
                 try:
-                    return e.code, json.loads(err_body)
+                    res_body = json.loads(raw)
                 except Exception:
-                    return e.code, {"error": err_body}
-        except Exception:
-            pass
+                    res_body = {"error": raw}
+                status = e.code
+            except Exception as e:
+                status, res_body = 500, {"error": str(e)}
 
-    # 3. Fallback langsung direct
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            res_body = resp.read().decode("utf-8")
-            return resp.status, json.loads(res_body) if res_body else {}
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8") if e.fp else ""
-        try:
-            return e.code, json.loads(err_body)
-        except Exception:
-            return e.code, {"error": err_body}
-    except Exception as e:
-        return 500, {"error": str(e)}
+        # 2. Fallback ke Tor SOCKS5 jika Azure tunnel 429 atau gagal
+        if (status in [429, 500, 502, 503, 504]) and TOR_OPENER:
+            try:
+                with TOR_OPENER.open(req, timeout=15) as resp:
+                    raw = resp.read().decode("utf-8")
+                    status, res_body = resp.status, json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as e:
+                raw = e.read().decode("utf-8") if e.fp else ""
+                try:
+                    res_body = json.loads(raw)
+                except Exception:
+                    res_body = {"error": raw}
+                status = e.code
+            except Exception as e:
+                status, res_body = 500, {"error": str(e)}
+
+        # 3. Direct fallback
+        if status in [429, 500, 502, 503, 504]:
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    raw = resp.read().decode("utf-8")
+                    status, res_body = resp.status, json.loads(raw) if raw else {}
+            except urllib.error.HTTPError as e:
+                raw = e.read().decode("utf-8") if e.fp else ""
+                try:
+                    res_body = json.loads(raw)
+                except Exception:
+                    res_body = {"error": raw}
+                status = e.code
+            except Exception as e:
+                status, res_body = 500, {"error": str(e)}
+
+        # Jika bukan transient server error (502/503/504), return langsung
+        if status not in [500, 502, 503, 504, 520, 521, 522, 524]:
+            return status, res_body
+
+        # Jika transient 502, backoff sejenak dan coba lagi
+        time.sleep(1.0 * (attempt + 1))
+
+    return status, res_body
 
 def discover_series_stream(fallback_slug: str = "magic-emperor", max_pages: int = 50):
     """
@@ -588,15 +602,52 @@ def main():
         except Exception as e:
             print(f"[ERROR] Masalah pada akun utama: {e}")
 
-    # 2. PROSES AKUN-AKUN HELPER BERIKUTNYA
-    other_tokens = tokens[1:]
-    for idx, token in enumerate(other_tokens, 2):
-        try:
-            cids, res = farm_account(token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
-            if res:
-                results.append((idx, res))
-        except Exception as e:
-            print(f"[ERROR] Masalah pada akun #{idx}: {e}")
+    # 2. PROSES SELURUH AKUN HELPER (Login + 50 Bab + 5 Komentar)
+    helper_comments_map = {}
+    if not args.status_only and helper_tokens:
+        print("\n" + "=" * 60)
+        print(f"[*] MEMPROSES SELURUH {len(helper_tokens)} AKUN HELPER...")
+        print("=" * 60)
+        for h_idx, h_tok in enumerate(helper_tokens, 1):
+            try:
+                cids, res = farm_account(h_tok, target_id, target_slug, args.delay_mult, status_only=args.status_only)
+                if not cids:
+                    st_uc, res_uc = api_request("/user/comments", token=h_tok)
+                    if st_uc == 200 and isinstance(res_uc.get("data"), list):
+                        cids = [c["id"] for c in res_uc["data"][:5] if "id" in c]
+                helper_comments_map[h_idx] = cids or []
+                if res:
+                    results.append((h_idx + 1, res))
+            except Exception as e:
+                print(f"[ERROR] Masalah pada helper #{h_idx}: {e}")
+
+        # 3. CROSS-LIKE SILANG ANTAR HELPER (Agar setiap helper juga dapat +100 Merit / 695 Full!)
+        if not args.no_boost and len(helper_tokens) >= 10:
+            print("\n" + "=" * 60)
+            print("[*] MENJALANKAN CROSS-LIKE SILANG ANTAR HELPER (+100 MERIT PER HELPER)...")
+            print("=" * 60)
+            num_h = len(helper_tokens)
+            for t_idx, t_tok in enumerate(helper_tokens, 1):
+                t_cids = helper_comments_map.get(t_idx, [])
+                if not t_cids:
+                    continue
+
+                likes_done = 0
+                for offset in range(1, 11):
+                    v_idx = (t_idx - 1 + offset) % num_h
+                    v_tok = helper_tokens[v_idx]
+
+                    for cid in t_cids:
+                        if likes_done >= 50:
+                            break
+                        st_u, _ = api_request(f"/comments/{cid}/upvote", token=v_tok, method="POST", body={})
+                        if st_u in [200, 201]:
+                            likes_done += 1
+                        time.sleep(0.04)
+                    if likes_done >= 50:
+                        break
+
+                print(f"  [+] Helper #{t_idx:2d} -> {likes_done}/50 Likes selesai disuntik!")
 
     print("\n" + "=" * 60)
     print("[OK] Seluruh antrean akun dan auto-boost selesai diproses.")
