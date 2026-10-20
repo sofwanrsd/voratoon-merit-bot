@@ -326,14 +326,7 @@ def boost_helper_likes(helper_tokens: list[str], target_comment_ids: list[int]):
             st_u, _ = api_request(f"/comments/{cid}/upvote", token=h_token, method="POST", body={})
             if st_u in [200, 201]:
                 total_likes += 1
-            time.sleep(0.04)
-
-        # 2. Klaim login + 1 bab agar akun helper naik level & natural
-        try:
-            api_request("/cultivation/rewards/daily-login", token=h_token, method="POST", body={})
-            api_request("/cultivation/rewards/chapter", token=h_token, method="POST", body={"targetId": 235966, "mode": "chapter"})
-        except Exception:
-            pass
+            time.sleep(0.02)
 
     print(f"[OK] Selesai: {total_likes}/50 like sukses disuntikkan!")
 
@@ -395,6 +388,7 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
             if not chapters:
                 continue
 
+            consecutive_awarded = 0
             for ch_item in chapters:
                 cid = ch_item.get("id")
                 ch_idx = ch_item.get("data", {}).get("index", "?")
@@ -406,6 +400,9 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
                     d = res_c.get("data", {})
                     if not d.get("alreadyAwarded") and d.get("reward", {}).get("awardedMerit", 0) > 0:
                         chap_ok += 1
+                        consecutive_awarded = 0
+                    else:
+                        consecutive_awarded += 1
                     claimed_set.add(cid)
                     series_read_counts[slug] = series_read_counts.get(slug, 0) + 1
 
@@ -416,10 +413,15 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
                             print(f"  [+] Auto-Bookmark aktif: Komik '{slug}' ditambahkan ke Bookmark (>50 bab dibaca)!")
                 else:
                     claimed_set.add(cid)
+                    consecutive_awarded += 1
+
+                if consecutive_awarded >= 5:
+                    # Komik ini bab awalnya sudah banyak diklaim, loncat ke komik berikutnya!
+                    break
 
                 if chap_ok >= target_reads:
                     break
-                time.sleep(random.uniform(0.02, 0.05) * delay_mult)
+                time.sleep(random.uniform(0.01, 0.03) * delay_mult)
 
         cache[acc_key] = list(claimed_set)
         save_claimed_cache(cache)
