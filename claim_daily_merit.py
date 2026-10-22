@@ -45,6 +45,7 @@ import random
 import socket
 import signal
 import argparse
+import threading
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -203,6 +204,27 @@ def _do_open(opener, req, timeout: int, transport: str):
         return 500, {"error": "%s: %s" % (type(e).__name__, e)}
 
 
+_REQ_LOCK = threading.Lock()
+_LAST_REQ = [0.0]
+MIN_INTERVAL = float(os.environ.get("VORATOON_MIN_INTERVAL", "0.3"))
+
+
+def _throttle() -> None:
+    """Rate limiter GLOBAL (semua thread berbagi).
+
+    Wajib: server membalas 429 kalau request terlalu cepat. Ditemukan 2026-10-22
+    saat 10 worker paralel -> 965 HTTP 429 dalam satu run. Dari mesin dengan IP
+    lain request yang sama langsung 200, jadi limit-nya per-IP.
+    """
+    with _REQ_LOCK:
+        now = time.time()
+        wait = (_LAST_REQ[0] + MIN_INTERVAL) - now
+        if wait > 0:
+            time.sleep(wait)
+            now = time.time()
+        _LAST_REQ[0] = now
+
+
 def api_request(path: str, token: str = "", method: str = "GET", body: dict | None = None,
                 max_retries: int = 3) -> tuple[int, dict]:
     url = "%s%s" % (BASE_API, path)
@@ -224,6 +246,7 @@ def api_request(path: str, token: str = "", method: str = "GET", body: dict | No
     status, res_body = 500, {}
     for attempt in range(max_retries):
         status, res_body = 500, {}
+        _throttle()
         if PROXY_OPENER and _transport_ok("proxy"):
             status, res_body = _do_open(PROXY_OPENER, req, 10, "proxy")
         if status in (429, 500, 502, 503, 504) and TOR_OPENER and _transport_ok("tor"):
@@ -232,10 +255,13 @@ def api_request(path: str, token: str = "", method: str = "GET", body: dict | No
             status, res_body = _do_open(urllib.request.build_opener(), req, 10, "direct")
 
         if status == 429:
-            wait = min(10, 2 * (attempt + 1))
+            # Backoff naik: 5s, 10s, 20s, 30s, 30s... lalu HENTI (tidak dipaksa).
+            wait = min(30, 5 * (2 ** attempt))
             print("  [-] HTTP 429 dari %s - jeda %ds lalu berhenti (tidak dipaksa)." % (path, wait))
             time.sleep(wait)
-            return 429, res_body
+            if attempt >= max_retries - 1:
+                return 429, res_body
+            continue
         if status not in (500, 502, 503, 504, 520, 521, 522, 524):
             return status, res_body
         time.sleep(1.0 * (attempt + 1))
@@ -701,7 +727,6 @@ def push_qi_likes(accounts: list, results: list, need: int = 50) -> None:
                     # sudah ter-vote -> cabut, lalu kembalikan seperti semula
                     api_request("/comments/%s/upvote" % cid, token=voter["token"],
                                 method="POST", body={})
-                time.sleep(0.35)
         return target["label"], got, want
 
     from concurrent.futures import ThreadPoolExecutor
