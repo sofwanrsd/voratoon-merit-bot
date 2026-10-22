@@ -622,16 +622,23 @@ def push_qi_likes(accounts: list, results: list) -> None:
 
 def send_telegram_alert(text: str) -> None:
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    # Fallback: baca .env project (server runner tidak punya /root/.hermes/.env)
     if not token:
-        try:
-            hermes_env = Path("/root/.hermes/.env")
-            if hermes_env.exists():
-                for line in hermes_env.read_text(encoding="utf-8").splitlines():
+        for env_path in (ENV_FILE, Path("/root/.hermes/.env")):
+            try:
+                if not env_path.exists():
+                    continue
+                for line in env_path.read_text(encoding="utf-8").splitlines():
                     if line.startswith("TELEGRAM_BOT_TOKEN="):
-                        token = line.strip().split("=", 1)[1].strip('"').strip("'")
-        except Exception:
-            pass
+                        token = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if token:
+                            break
+                if token:
+                    break
+            except Exception:
+                continue
     if not token:
+        print("  [-] Telegram token tidak ditemukan -> notifikasi dilewati.")
         return
     for tgt in ({"chat_id": "5678748710"}, {"chat_id": "-1004385053126", "thread_id": 572}):
         try:
@@ -644,8 +651,9 @@ def send_telegram_alert(text: str) -> None:
                                          headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=10):
                 pass
-        except Exception:
-            pass
+            print("  [OK] Notifikasi Telegram terkirim ke %s" % tgt["chat_id"])
+        except Exception as e:
+            print("  [-] Gagal kirim notifikasi: %s" % e)
 
 
 def main():
