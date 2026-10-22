@@ -9,12 +9,16 @@ Kontrak resmi (terverifikasi 2026-10-22):
     daily-login  merit 20   limit 1
     chapter      merit 10   limit 50
     comment      merit 15   limit 5
-    comment-like merit 2    limit 100 like, meritDailyLimit 50  -> maks 50 merit
+    comment-like merit 2    limit 100 like, meritDailyLimit 50  -> 50 x 2 = 100 merit
     marathon     merit 0    limit 50  (exp only, butuh Premium Ultimate)
     premium-bonus merit 0            (exp only, premium)
 
-    => PLAFON MERIT/HARI = 20 + 500 + 75 + 50 = 645 merit per akun
+    => PLAFON MERIT/HARI = 20 + 500 + 75 + 100 = 695 merit per akun
     => EXP/HARI maks = 20 + 500 + 75 + 200 + 250 + 500 = 1545 exp
+
+Bukti 695 (bukan 645): leaderboard period=daily -> 10 user teratas TEPAT 695,
+bulanan top-1 15290 = 22 x 695, mingguan 2780 = 4 x 695. Tidak ada yang 645.
+`meritDailyLimit` = jumlah AKSI yang grants merit, bukan jumlah merit.
 
 Cara kerja:
   1. Login harian
@@ -316,16 +320,34 @@ def rules_of(catalog: dict) -> dict:
 
 
 def merit_cap_of(rules: dict, source: str) -> int:
+    """Plafon MERIT per hari untuk satu source.
+
+    PENTING (terverifikasi 2026-10-22 lewat leaderboard period=daily):
+    `meritDailyLimit` bukan jumlah MERIT, tapi jumlah AKSI yang grants merit.
+    Bukti: 10 user teratas di leaderboard harian tepat 695 (= 595 + 100),
+    dan bulanan top-1 = 15290 = 22 x 695 persis. Tidak ada satu pun yang 645.
+    Jadi comment-like merit=2 dengan meritDailyLimit=50 -> 50 x 2 = 100 merit.
+    """
     r = rules.get(source, {})
     if not r.get("grantsMerit"):
         return 0
     merit = r.get("merit", 0) or 0
     daily = r.get("dailyLimit") or 0
     cap = r.get("meritDailyLimit")
-    total = merit * daily
     if cap is not None:
-        total = min(total, cap)
-    return total
+        # cap = jumlah aksi yang memberi merit -> merit = cap x merit
+        return cap * merit
+    return merit * daily
+
+
+def like_actions_needed(rules: dict, source: str = "comment-like") -> int:
+    """Berapa jumlah like yang perlu di-push untuk mencapai plafon."""
+    r = rules.get(source, {})
+    merit = r.get("merit", 0) or 0
+    cap = r.get("meritDailyLimit")
+    if cap is not None:
+        return cap
+    return r.get("dailyLimit") or 0
 
 
 # ---------------------------------------------------------------- content
@@ -552,6 +574,14 @@ def farm_one(token: str, rules: dict, label: str, comment_ids_out: list) -> dict
 
     comment_ids_out.extend(created[:5])
 
+    # 3b. Kumpulkan SEMUA komentar akun (bukan cuma 5 terbaru) untuk Resonansi Qi.
+    # Makin banyak komentar = makin banyak pasangan (komentar, voter) unik yang
+    # bisa dipakai tanpa toggle, jadi cap 50 like lebih gampang tercapai.
+    all_comment_ids = list(created[:5])
+    st_all, res_all = api_request("/user/comments", token=token)
+    if st_all == 200 and isinstance(res_all.get("data"), list):
+        all_comment_ids = [c["id"] for c in res_all["data"] if "id" in c]
+
     # 4. EQUIP BADGE
     equip_badges(token, prof)
 
@@ -583,41 +613,107 @@ def farm_one(token: str, rules: dict, label: str, comment_ids_out: list) -> dict
         "streak": fd.get("streak"),
         "daily": f_daily,
         "comment_ids": created[:5],
+        "all_comment_ids": all_comment_ids,
     }
 
 
-def push_qi_likes(accounts: list, results: list) -> None:
+def push_qi_likes(accounts: list, results: list, need: int = 50) -> None:
     """Resonansi Qi: like dari akun lain ke komentar akun target.
-    Merit 2 per like, meritDailyLimit 50 => butuh 25 like untuk cap.
-    Hanya Like dari akun LAIN yang dihitung server."""
+
+    merit=2 per like, meritDailyLimit=50 -> 50 like x 2 = 100 merit/hari.
+    DIVERIFIKASI 2026-10-22: leaderboard period=daily -> 10 user teratas
+    TEPAT 695 (= 595 + 100), bulanan top-1 15290 = 22 x 695. Jadi butuh 50 like,
+    bukan 25. Like dari akun LAIN saja yang dihitung server.
+
+    IDEMPOTEN: baca leaderboard harian, akun yang sudah tembak 695 dilewati.
+    PARALEL: 22 akun x 50 like = 1100 request; sequential timeout. Dipisah
+    per-akun dengan ThreadPoolExecutor.
+    """
     if len(accounts) < 2:
         print("\n[!] Hanya 1 akun - Resonansi Qi butuh akun lain untuk vote.")
         return
     print("\n" + "=" * 62)
     print("Resonansi Qi: push like ke komentar tiap akun")
     print("=" * 62)
-    for target in results:
-        ids = target.get("comment_ids") or []
+
+    # --- cek siapa yang sudah penuh (idempoten) ---
+    daily_merit = {}
+    st_lb, lb = api_request("/rankings/users?period=daily&take=100", token=accounts[0]["token"])
+    if st_lb == 200:
+        for u in (lb.get("data") or []):
+            if u.get("userId") is not None and u.get("periodMerit") is not None:
+                daily_merit[str(u.get("userId"))] = u.get("periodMerit")
+    uid_of = {}
+    for acc in accounts:
+        st, mm = api_request("/auth/me", token=acc["token"])
+        if st == 200:
+            uid_of[acc["token"]] = str((mm.get("data") or {}).get("id"))
+
+    def remaining_for(acc):
+        """Berapa merit comment-like yang kurang (maks 100)."""
+        uid = uid_of.get(acc["token"])
+        pm = daily_merit.get(uid)
+        if pm is None:
+            return need  # tidak tahu -> Coba max
+        base = 595  # login 20 + chapter 500 + comment 75
+        got = max(0, min(100, pm - base))
+        return max(0, (100 - got) + 1) // 2  # jumlah like yang kurang
+
+    def push_for(target):
+        ids = target.get("all_comment_ids") or target.get("comment_ids") or []
         if not ids:
-            continue
+            return target["label"], 0, 0
         token = target["token"]
         others = [a for a in accounts if a["token"] != token]
         random.shuffle(others)
+        want = min(remaining_for({"token": token}), need)
+        if want <= 0:
+            return target["label"], 0, 0
+
+        # ATURAN SERVER (terverifikasi 2026-10-22 lewat eksperimen per-komentar):
+        #   endpoint upvote itu TOGGLE.
+        #     response data.vote == 1    -> like BENAR-BARU, merit +2
+        #     response data.vote == null -> kita mencabut like yang sudah ada,
+        #                                     TIDAK menambah merit -> restore.
+        #   GET /comments/{id} tidak ada (404), jadi tidak bisa pakai viewerVote.
+        #   Solusi: satu voter hanya boleh dipakai SEKALI per komentar, dan kalau
+        #   kena toggle langsung vote lagi untuk memulihkan.
         got = 0
-        need = 25  # 25 like x 2 merit = 50 (cap meritDailyLimit)
         for cid in ids:
-            if got >= need:
+            if got >= want:
                 break
             for voter in others:
-                if got >= need:
+                if got >= want:
                     break
-                st, _ = api_request("/comments/%s/upvote" % cid, token=voter["token"],
-                                    method="POST", body={})
-                if st in (200, 201):
+                st_v, vbody = api_request("/comments/%s/upvote" % cid, token=voter["token"],
+                                          method="POST", body={})
+                if st_v == 429:
+                    # Rate limit kena: jeda panjang, lalu coba voter berikutnya.
+                    # Kalau semua kena 429, berhenti untuk akun ini (aman, idempoten).
+                    time.sleep(3.0)
+                    continue
+                if st_v not in (200, 201):
+                    continue
+                vote = (vbody.get("data") or {}).get("vote")
+                if vote == 1:
                     got += 1
-                time.sleep(0.05)
-        target["likes_pushed"] = got
-        print("  %-10s -> %d like dipush (maks 25 untuk cap 50 merit/hari)" % (target["label"], got))
+                elif vote is None:
+                    # sudah ter-vote -> cabut, lalu kembalikan seperti semula
+                    api_request("/comments/%s/upvote" % cid, token=voter["token"],
+                                method="POST", body={})
+                time.sleep(0.35)
+        return target["label"], got, want
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        out = list(ex.map(push_for, results))
+
+    total_got = 0
+    for label, got, want in out:
+        total_got += got
+        note = "FULL 695 (skip)" if want == 0 else ("butuh %d, push %d" % (want, got))
+        print("  %-10s -> %d like dipush   [%s]" % (label, got, note))
+    print("  TOTAL: %d like dipush ke %d akun" % (total_got, len(out)))
 
 
 def send_telegram_alert(text: str) -> None:
@@ -687,6 +783,14 @@ def main():
             src, r.get("merit"), r.get("dailyLimit"), r.get("meritDailyLimit"), cap))
     total_cap = sum(merit_cap_of(rules, s) for s in rules)
     print("  PLAFON MERIT/HARI PER AKUN = %d" % total_cap)
+    # Sanity check terhadap leaderboard harian server (top1 = 695 saat verifikasi)
+    st_lb, lb = api_request("/rankings/users?period=daily&take=5", token=primary or tokens[0])
+    if st_lb == 200:
+        lb_top = [u.get("periodMerit") for u in (lb.get("data") or []) if u.get("periodMerit")]
+        if lb_top:
+            print("  VERIFIKASI: top1 leaderboard harian = %s (harus == plafon di atas)" % lb_top[0])
+            if lb_top[0] != total_cap:
+                print("  [PERHATIAN] plafon hitung != leaderboard. Cek interpretasi meritDailyLimit.")
     print()
 
     accounts = []
@@ -718,7 +822,9 @@ def main():
             print("  [ERROR] %s: %s" % (acc["label"], e))
 
     if not args.status_only and results and not args.no_qi:
-        push_qi_likes(accounts, results)
+        need = like_actions_needed(rules)
+        print("\n[Qi] Target like per akun: %d (dari meritDailyLimit kontrak)" % need)
+        push_qi_likes(accounts, results, need)
 
     print()
     print("=" * 62)
