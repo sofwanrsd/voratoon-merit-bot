@@ -556,7 +556,16 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
     else:
         print("\n[3/3] Kuota 5 komentar sudah maksimal hari ini (5/5).")
 
-    # 5. Final Status
+    # 5. Equip badge yang SUDAH di-earn (cosmetic progression, bukan fabrikasi)
+    earned = [b.get("key") for b in (c_data.get("badges") or []) if b.get("key")]
+    equipped = {b.get("key") for b in (c_data.get("badges") or []) if b.get("equipped")}
+    pending = [k for k in earned if k not in equipped]
+    if pending:
+        st_eq, _ = api_request("/cultivation/equipment", token=token, method="PATCH", body={"badges": pending})
+        if st_eq in [200, 201]:
+            print(f"  [+] Badge ter-equip: {', '.join(pending)}")
+
+    # 6. Final Status
     result_data = None
     st_f, final_me = api_request("/cultivation/me", token=token)
     if st_f == 200:
@@ -574,6 +583,7 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
             "gained": gained,
             "tier": fd.get("tier", {}).get("name", "Commoner"),
             "daily": f_daily,
+            "streak": fd.get("streak", fd.get("loginStreak", 0)),
             "username": fd.get("username", "Member")
         }
 
@@ -685,14 +695,25 @@ def main():
     # 3. Kirim notifikasi Telegram otomatis dengan status Leaderboard Nasional
     if not args.status_only and results:
         lines = ["*Laporan Harian Voratoon Daily Quest*", ""]
+        total_gain = 0
+        full_count = 0
         for idx, r in results:
             role = "Akun Utama" if idx == 1 else f"Akun Helper #{idx - 1}"
             d = r.get("daily", {})
+            l_ok = d.get("login", {}).get("used", 0) >= 1
+            c_ok = d.get("chapters", {}).get("used", 0) >= 50
+            k_ok = d.get("comments", {}).get("used", 0) >= 5
+            if l_ok and c_ok and k_ok:
+                full_count += 1
+            total_gain += r.get("gained") or 0
             lines.append(f"*{role}:*")
-            lines.append(f"- Level: {r.get('level')} ({r.get('tier')})")
+            lines.append(f"- Level: {r.get('level')} ({r.get('tier')}) | Streak: {r.get('streak')} hari")
             lines.append(f"- Total Merit: {r.get('merit'):,} (+{r.get('gained')})")
             lines.append(f"- Kuota: Login {d.get('login', {}).get('used')}/{d.get('login', {}).get('limit')} | Bab {d.get('chapters', {}).get('used')}/{d.get('chapters', {}).get('limit')} | Komen {d.get('comments', {}).get('used')}/{d.get('comments', {}).get('limit')}")
             lines.append("")
+
+        lines.append(f"*Ringkasan: {full_count}/{len(results)} akun kuota penuh, total +{total_gain:,} merit.*")
+        lines.append("")
 
         # Live Leaderboard Checking
         try:
