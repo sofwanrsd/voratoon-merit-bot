@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Voratoon Daily Merit Auto-Maxer
-A clean, multi-account compatible automation tool for Voratoon Cultivation system.
+Voratoon Daily Merit Fetcher
+Automation tool for Voratoon Cultivation daily quests (login, chapter reads, chapter comments).
 
 Features:
 - Dynamic series discovery (fetches popular series automatically, no hardcoded IDs)
 - Multi-account support (single token or comma-separated tokens in .env / CLI)
-- Helper / Symbiotic Auto-Like Boost (+100 Merit from Resonansi Qi)
-- Stealth jitter & natural human delay simulation
+- Hard wall-clock guard per request + per account (no infinite hangs)
+- Circuit breaker per transport (dead SOCKS/Tor tunnel is skipped, not waited on)
+- Rate-limit aware: backs off and stops on HTTP 429
 - Rich CLI interface (--help, --status-only, --series, --delay)
 - Zero external dependencies (pure Python 3 standard library)
 """
@@ -17,6 +18,8 @@ import sys
 import time
 import random
 import json
+import socket
+import signal
 import argparse
 import urllib.request
 import urllib.error
@@ -73,14 +76,13 @@ SERIES_POOL = [4718, 7133, 8261, 4541, 5501, 1658, 6490, 1880, 7488, 797]
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Voratoon Cultivation Merit Auto-Maxer CLI",
+        description="Voratoon Daily Quest Fetcher CLI",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("-t", "--token", help="Voratoon Bearer Token (overrides .env)")
     parser.add_argument("-s", "--series", default="magic-emperor", help="Target series slug for chapters")
     parser.add_argument("-d", "--delay-mult", type=float, default=1.0, help="Delay multiplier for request intervals")
     parser.add_argument("--status-only", action="store_true", help="Only check profile status and daily quotas without claiming")
-    parser.add_argument("--no-boost", action="store_true", help="Disable helper account auto-like booster")
     parser.add_argument("--jitter", action="store_true", help="Aktifkan jeda acak di awal eksekusi (default: mati/instan)")
     return parser.parse_args()
 
@@ -131,6 +133,65 @@ def load_tokens_config(cli_token: str = None) -> tuple[list[str], str, list[str]
     unique_tokens = list(dict.fromkeys(tokens))
     return unique_tokens, t_primary, helper_tokens
 
+REQUEST_HARD_CAP = 25  # detik, plafond mutlak untuk SATU request (wajib, bukan opsional)
+ACCOUNT_DEADLINE = 240  # detik, budget satu akun sebelum di-abort
+
+# Circuit breaker: setiap transport yang gagal beruntun langsung dimatikan supaya
+# tidak ada request lagi yang menggantung di jalur mati.
+_TRANSPORT_FAILS = {"proxy": 0, "tor": 0, "direct": 0}
+_TRANSPORT_MAX_FAILS = 3
+
+
+class HardTimeout(Exception):
+    pass
+
+
+class _hard_timeout:
+    """SIGALRM guard. urllib timeout= TIDAK berlaku pada socket yang dibuat
+    sockshandler setelah handshake SOCKS, jadi tanpa guard ini request bisa
+    menggantung tanpa batas ( penyebab worker 7 jam tanpa output )."""
+
+    def __init__(self, seconds: int):
+        self.seconds = max(1, int(seconds))
+        self._armed = False
+
+    def __enter__(self):
+        try:
+            self._old = signal.signal(signal.SIGALRM, self._fire)
+            signal.alarm(self.seconds)
+            self._armed = True
+        except Exception:
+            self._armed = False
+        return self
+
+    def _fire(self, signum, frame):
+        raise HardTimeout(f"request melewati {self.seconds}s")
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._armed:
+            try:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, self._old)
+            except Exception:
+                pass
+        return False
+
+
+def _transport_ok(name: str) -> bool:
+    return _TRANSPORT_FAILS[name] < _TRANSPORT_MAX_FAILS
+
+
+def _transport_failed(name: str) -> None:
+    _TRANSPORT_FAILS[name] += 1
+    if _TRANSPORT_FAILS[name] == _TRANSPORT_MAX_FAILS:
+        label = {"proxy": "SOCKS5 127.0.0.1:1088", "tor": "Tor 127.0.0.1:9050", "direct": "koneksi direct"}[name]
+        print(f"  [-] Transport '{label}' gagal {_TRANSPORT_MAX_FAILS}x berturut -> dimatikan (circuit breaker), request berikutnya pakai jalur lain.")
+
+
+def _transport_ok_again(name: str) -> None:
+    _TRANSPORT_FAILS[name] = 0
+
+
 PROXY_OPENER = None
 try:
     import socks
@@ -147,6 +208,56 @@ try:
     TOR_OPENER = urllib.request.build_opener(SocksiPyHandler(socks.SOCKS5, "127.0.0.1", 9050))
 except Exception:
     TOR_OPENER = None
+
+
+def probe_transports() -> None:
+    """Deteksi environment sebelum run: jangan coba jalur yang jelas tidak ada,
+    tiap requestsia bakal buang 2x timeout sebelum fallback."""
+    global PROXY_OPENER, TOR_OPENER
+    if os.environ.get("VORATOON_NO_PROXY") == "1":
+        PROXY_OPENER = None
+        print("[*] MODE DIRECT: proxy dimatikan via env VORATOON_NO_PROXY=1")
+    else:
+        for name, opener, port in (("proxy", PROXY_OPENER, 1088), ("tor", TOR_OPENER, 9050)):
+            if opener is None:
+                continue
+            alive = False
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    alive = True
+            except Exception:
+                alive = False
+            if not alive:
+                _TRANSPORT_FAILS[name] = _TRANSPORT_MAX_FAILS
+                print(f"[-] Transport {name} (127.0.0.1:{port}) TIDAK hidup -> dilewati, tidak akan dicoba")
+            else:
+                print(f"[+] Transport {name} (127.0.0.1:{port}) hidup")
+
+def _do_open(opener, req, timeout: int, transport: str) -> tuple[int, dict]:
+    """Satu percobaan request dengan hard wall-clock cap.
+    Tidak boleh menggantung: SIGALRM yang menjadi jaring pengaman terakhir."""
+    try:
+        with _hard_timeout(REQUEST_HARD_CAP):
+            with opener.open(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                status, res_body = resp.status, json.loads(raw) if raw else {}
+        _transport_ok_again(transport)
+        return status, res_body
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8") if e.fp else ""
+        try:
+            res_body = json.loads(raw)
+        except Exception:
+            res_body = {"error": raw}
+        _transport_ok_again(transport)
+        return e.code, res_body
+    except HardTimeout:
+        _transport_failed(transport)
+        return 504, {"error": f"hard timeout {REQUEST_HARD_CAP}s"}
+    except Exception as e:
+        _transport_failed(transport)
+        return 500, {"error": str(e)}
+
 
 def api_request(path: str, token: str = "", method: str = "GET", body: dict = None, max_retries: int = 3) -> tuple[int, dict]:
     url = f"{BASE_API}{path}"
@@ -169,59 +280,30 @@ def api_request(path: str, token: str = "", method: str = "GET", body: dict = No
     for attempt in range(max_retries):
         status, res_body = 500, {}
 
-        # 1. Gunakan Tunnel Azure Jakarta langsung (kecepatan kilat 15ms, anti-delay, anti-429)
-        if PROXY_OPENER:
-            try:
-                with PROXY_OPENER.open(req, timeout=10) as resp:
-                    raw = resp.read().decode("utf-8")
-                    status, res_body = resp.status, json.loads(raw) if raw else {}
-            except urllib.error.HTTPError as e:
-                raw = e.read().decode("utf-8") if e.fp else ""
-                try:
-                    res_body = json.loads(raw)
-                except Exception:
-                    res_body = {"error": raw}
-                status = e.code
-            except Exception as e:
-                status, res_body = 500, {"error": str(e)}
+        # 1. Transport utama (SOCKS5) kalau hidup
+        if PROXY_OPENER and _transport_ok("proxy"):
+            status, res_body = _do_open(PROXY_OPENER, req, 10, "proxy")
 
-        # 2. Fallback ke Tor SOCKS5 jika Azure tunnel 429 atau gagal
-        if (status in [429, 500, 502, 503, 504]) and TOR_OPENER:
-            try:
-                with TOR_OPENER.open(req, timeout=15) as resp:
-                    raw = resp.read().decode("utf-8")
-                    status, res_body = resp.status, json.loads(raw) if raw else {}
-            except urllib.error.HTTPError as e:
-                raw = e.read().decode("utf-8") if e.fp else ""
-                try:
-                    res_body = json.loads(raw)
-                except Exception:
-                    res_body = {"error": raw}
-                status = e.code
-            except Exception as e:
-                status, res_body = 500, {"error": str(e)}
+        # 2. Transport cadangan (Tor SOCKS5) kalau hidup
+        if status in [429, 500, 502, 503, 504] and TOR_OPENER and _transport_ok("tor"):
+            status, res_body = _do_open(TOR_OPENER, req, 15, "tor")
 
         # 3. Direct fallback
-        if status in [429, 500, 502, 503, 504]:
-            try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    raw = resp.read().decode("utf-8")
-                    status, res_body = resp.status, json.loads(raw) if raw else {}
-            except urllib.error.HTTPError as e:
-                raw = e.read().decode("utf-8") if e.fp else ""
-                try:
-                    res_body = json.loads(raw)
-                except Exception:
-                    res_body = {"error": raw}
-                status = e.code
-            except Exception as e:
-                status, res_body = 500, {"error": str(e)}
+        if status in [429, 500, 502, 503, 504] and _transport_ok("direct"):
+            status, res_body = _do_open(urllib.request, req, 10, "direct")
 
-        # Jika bukan transient server error (502/503/504), return langsung
+        # 429 = rate limit, JANGAN retry cepat. Backoff dan berhenti.
+        if status == 429:
+            wait = min(30, 5 * (attempt + 1))
+            print(f"  [-] HTTP 429 (rate limit) dari {path} - backoff {wait}s lalu berhenti di request ini.")
+            time.sleep(wait)
+            return 429, res_body
+
+        # Jika bukan transient server error, return langsung
         if status not in [500, 502, 503, 504, 520, 521, 522, 524]:
             return status, res_body
 
-        # Jika transient 502, backoff sejenak dan coba lagi
+        # Transient 5xx: backoff lalu coba lagi
         time.sleep(1.0 * (attempt + 1))
 
     return status, res_body
@@ -291,45 +373,6 @@ def fetch_series_chapters(series_slug: str, limit: int = 500) -> list[dict]:
         return valid[:limit]
     return []
 
-def boost_helper_likes(helper_tokens: list[str], target_comment_ids: list[int]):
-    if not target_comment_ids or not helper_tokens:
-        return
-
-    # Rotasi Shift A (Ganjil) & Shift B (Genap)
-    import datetime
-    day_num = datetime.datetime.now().timetuple().tm_yday
-    shift_name = "Shift A" if day_num % 2 == 1 else "Shift B"
-    
-    # Prioritaskan active shift, lalu fallback ke semua helper lainnya agar PASTI mencapai 50 like!
-    if len(helper_tokens) >= 20:
-        active_shift = helper_tokens[:10] if shift_name == "Shift A" else helper_tokens[10:20]
-        backup_shift = helper_tokens[10:20] if shift_name == "Shift A" else helper_tokens[:10]
-        ordered_helpers = active_shift + backup_shift + helper_tokens[20:]
-    else:
-        ordered_helpers = helper_tokens
-
-    print("\n" + "=" * 60)
-    print(f"[*] Resonansi Qi: Memproses upvote ({shift_name}: target 50 Like)...")
-    print("=" * 60)
-
-    total_likes = 0
-    # Voratoon limit: maksimal 50 like per hari (+100 Merit harian)
-    for h_idx, h_token in enumerate(ordered_helpers, 1):
-        if total_likes >= 50:
-            print("[+] Target maksimal 50 Like (+100 Merit) harian telah terpenuhi!")
-            break
-
-        # 1. Suntik like ke komentar utama
-        for cid in target_comment_ids:
-            if total_likes >= 50:
-                break
-            st_u, _ = api_request(f"/comments/{cid}/upvote", token=h_token, method="POST", body={})
-            if st_u in [200, 201]:
-                total_likes += 1
-            time.sleep(0.02)
-
-    print(f"[OK] Selesai: {total_likes}/50 like sukses disuntikkan!")
-
 def farm_account(token: str, target_series_id: int, target_series_slug: str, delay_mult: float, status_only: bool = False) -> tuple[list[int], dict | None]:
     mask_token = token[:8] + "..." + token[-6:] if len(token) > 14 else "token"
     print("\n" + "=" * 60)
@@ -381,8 +424,12 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
         target_reads = max(ch_rem, random.randint(52, 60))
 
         # Mengalirkan ribuan komik secara dinamis sampai kuota harian terpenuhi 100%
+        deadline = time.time() + ACCOUNT_DEADLINE
         for slug in discover_series_stream(target_series_slug, max_pages=50):
             if chap_ok >= target_reads:
+                break
+            if time.time() > deadline:
+                print(f"  [-] Batas waktu akun ({ACCOUNT_DEADLINE}s) tercapai saat memindai komik -> lanjut tahap komentar.")
                 break
             chapters = fetch_series_chapters(slug, limit=500)
             if not chapters:
@@ -394,6 +441,9 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
                 ch_idx = ch_item.get("data", {}).get("index", "?")
                 if not cid or cid in claimed_set:
                     continue
+                if time.time() > deadline:
+                    print(f"  [-] Batas waktu akun tercapai di tengah pemindaian bab -> stop bab, lanjut komentar.")
+                    break
 
                 st_c, res_c = api_request("/cultivation/rewards/chapter", token=token, method="POST", body={"targetId": cid, "mode": "chapter"})
                 if st_c in [200, 201]:
@@ -568,102 +618,62 @@ def main():
         time.sleep(jitter_s)
 
     print("=" * 60)
-    print("Voratoon Cultivation Merit Auto-Maxer")
+    print("Voratoon Daily Quest Fetcher")
     print("=" * 60)
     print(f"[*] Ditemukan {len(tokens)} akun utama dan {len(helper_tokens)} akun helper.")
+
+    # Deteksi transport SEBELUM request: jangan paksa lewat tunnel yang mati
+    probe_transports()
 
     target_id, target_slug = discover_series(args.series)
     print(f"[*] Target Series Default: {target_slug} (ID: {target_id})")
 
-    primary_created_comments = []
     results = []
 
-    # 1. PRIORITAS #1: Eksekusi Akun Utama Kilat (<4 detik) untuk langsung mengunci 695 Merit & RANK #1
+    # 1. PRIORITAS #1: Eksekusi Akun Utama lebih dulu (misi hariannya: login + bab + komentar)
     if primary_token:
         print("[*] MEMPROSES AKUN UTAMA (PRIORITAS TINGGI)...")
         try:
-            cids, res = farm_account(primary_token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
-            if cids:
-                primary_created_comments = cids
+            with _hard_timeout(ACCOUNT_DEADLINE * 2):
+                cids, res = farm_account(primary_token, target_id, target_slug, args.delay_mult, status_only=args.status_only)
             if res:
                 results.append((1, res))
 
-            # Jika cids kosong (misal komentar sudah dibuat sebelumnya), ambil 5 komentar terbaru dari profil
-            if not primary_created_comments:
-                st_uc, res_uc = api_request("/user/comments", token=primary_token)
-                if st_uc == 200 and isinstance(res_uc.get("data"), list):
-                    primary_created_comments = [c["id"] for c in res_uc["data"][:5] if "id" in c]
-
-            # LANGSUNG SUNTIK 50 LIKES KE AKUN UTAMA DETIK INI JUGA (TANPA MENUNGGU AKUN LAIN!)
-            if not args.status_only and not args.no_boost and helper_tokens and primary_created_comments:
-                print("\n[*] LANGSUNG MENYUNTIK 50 LIKE HELPER KE AKUN UTAMA...")
-                boost_helper_likes(helper_tokens, primary_created_comments)
-
-                # Konfirmasi Peringkat Akun Utama Langsung di Detik Awal
+            # Konfirmasi peringkat akun utama
+            if not args.status_only:
                 try:
                     st_lb, res_lb = api_request("/rankings/users", token=primary_token)
                     if st_lb == 200:
                         my = res_lb.get("myRank", {})
-                        print(f"\n[👑 TAHTA] AKUN UTAMA SUKSES MAKSIMAL! Peringkat: Rank #{my.get('rank')} ({my.get('periodMerit'):,} Weekly Merit)!")
+                        print(f"\n[PERINGKAT] Akun utama: Rank #{my.get('rank')} ({my.get('periodMerit'):,} Weekly Merit)")
                 except Exception:
                     pass
         except Exception as e:
             print(f"[ERROR] Masalah pada akun utama: {e}")
 
-    # 2. PROSES SELURUH AKUN HELPER (Login + 50 Bab + 5 Komentar)
-    helper_comments_map = {}
+    # 2. PROSES SELURUH AKUN HELPER (Login + Bab + Komentar)
     if not args.status_only and helper_tokens:
         print("\n" + "=" * 60)
         print(f"[*] MEMPROSES SELURUH {len(helper_tokens)} AKUN HELPER...")
         print("=" * 60)
         for h_idx, h_tok in enumerate(helper_tokens, 1):
             try:
-                cids, res = farm_account(h_tok, target_id, target_slug, args.delay_mult, status_only=args.status_only)
-                if not cids:
-                    st_uc, res_uc = api_request("/user/comments", token=h_tok)
-                    if st_uc == 200 and isinstance(res_uc.get("data"), list):
-                        cids = [c["id"] for c in res_uc["data"][:5] if "id" in c]
-                helper_comments_map[h_idx] = cids or []
+                with _hard_timeout(ACCOUNT_DEADLINE * 2):
+                    cids, res = farm_account(h_tok, target_id, target_slug, args.delay_mult, status_only=args.status_only)
                 if res:
                     results.append((h_idx + 1, res))
+            except HardTimeout:
+                print(f"[ERROR] Helper #{h_idx} melewati batas waktu {ACCOUNT_DEADLINE * 2}s -> dilewati, lanjut akun berikutnya.")
             except Exception as e:
                 print(f"[ERROR] Masalah pada helper #{h_idx}: {e}")
 
-        # 3. CROSS-LIKE SILANG ANTAR HELPER (Agar setiap helper juga dapat +100 Merit / 695 Full!)
-        if not args.no_boost and len(helper_tokens) >= 10:
-            print("\n" + "=" * 60)
-            print("[*] MENJALANKAN CROSS-LIKE SILANG ANTAR HELPER (+100 MERIT PER HELPER)...")
-            print("=" * 60)
-            num_h = len(helper_tokens)
-            for t_idx, t_tok in enumerate(helper_tokens, 1):
-                t_cids = helper_comments_map.get(t_idx, [])
-                if not t_cids:
-                    continue
-
-                likes_done = 0
-                for offset in range(1, 11):
-                    v_idx = (t_idx - 1 + offset) % num_h
-                    v_tok = helper_tokens[v_idx]
-
-                    for cid in t_cids:
-                        if likes_done >= 50:
-                            break
-                        st_u, _ = api_request(f"/comments/{cid}/upvote", token=v_tok, method="POST", body={})
-                        if st_u in [200, 201]:
-                            likes_done += 1
-                        time.sleep(0.04)
-                    if likes_done >= 50:
-                        break
-
-                print(f"  [+] Helper #{t_idx:2d} -> {likes_done}/50 Likes selesai disuntik!")
-
     print("\n" + "=" * 60)
-    print("[OK] Seluruh antrean akun dan auto-boost selesai diproses.")
+    print("[OK] Seluruh antrean akun selesai diproses.")
     print("=" * 60)
 
     # 3. Kirim notifikasi Telegram otomatis dengan status Leaderboard Nasional
     if not args.status_only and results:
-        lines = ["*Laporan Harian Voratoon Merit Auto-Maxer*", ""]
+        lines = ["*Laporan Harian Voratoon Daily Quest*", ""]
         for idx, r in results:
             role = "Akun Utama" if idx == 1 else f"Akun Helper #{idx - 1}"
             d = r.get("daily", {})
