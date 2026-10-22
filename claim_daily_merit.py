@@ -206,7 +206,25 @@ def _do_open(opener, req, timeout: int, transport: str):
 
 _REQ_LOCK = threading.Lock()
 _LAST_REQ = [0.0]
-MIN_INTERVAL = float(os.environ.get("VORATOON_MIN_INTERVAL", "0.3"))
+MIN_INTERVAL = float(os.environ.get("VORATOON_MIN_INTERVAL", "0.12"))
+_TOR_REQUESTS = [0]
+_TOR_ROTATE_EVERY = int(os.environ.get("VORATOON_TOR_ROTATE", "40"))
+
+
+def _rotate_tor() -> None:
+    """Minta exit node Tor baru supaya limit per-IP tidak nempel di satu node.
+
+    ControlPort Tor default 9051 (socks 9050)."""
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["/usr/bin/curl", "-s", "--socks5-hostname", "127.0.0.1:9050",
+             "http://127.0.0.1:9051", "--data", "SIGNAL NEWNYM"],
+            capture_output=True, timeout=25)
+        out = (r.stdout or b"").decode("utf-8", "ignore").strip()
+        print("  [*] Rotasi exit node Tor: %s" % (out or "(no output)"))
+    except Exception as e:
+        print("  [-] Gagal rotasi Tor: %s" % e)
 
 
 def _throttle() -> None:
@@ -223,6 +241,10 @@ def _throttle() -> None:
             time.sleep(wait)
             now = time.time()
         _LAST_REQ[0] = now
+        _TOR_REQUESTS[0] += 1
+        rotate = (_TOR_REQUESTS[0] % _TOR_ROTATE_EVERY == 0)
+    if rotate:
+        _rotate_tor()
 
 
 def api_request(path: str, token: str = "", method: str = "GET", body: dict | None = None,
@@ -247,10 +269,15 @@ def api_request(path: str, token: str = "", method: str = "GET", body: dict | No
     for attempt in range(max_retries):
         status, res_body = 500, {}
         _throttle()
-        if PROXY_OPENER and _transport_ok("proxy"):
+        # Urutan transport: TOR dulu -> proxy -> direct.
+        # Alasannya (2026-10-22): rate limit server itu per-IP. IP Azure kena blok
+        # 429 >20 menit setelah burst paralel, padahal request yang sama dari IP
+        # lain langsung 200. Lewat Tor, setiap request keluar dari exit node
+        # berbeda sehingga limit per-IP tidak nempel.
+        if TOR_OPENER and _transport_ok("tor"):
+            status, res_body = _do_open(TOR_OPENER, req, 20, "tor")
+        if status in (429, 500, 502, 503, 504) and PROXY_OPENER and _transport_ok("proxy"):
             status, res_body = _do_open(PROXY_OPENER, req, 10, "proxy")
-        if status in (429, 500, 502, 503, 504) and TOR_OPENER and _transport_ok("tor"):
-            status, res_body = _do_open(TOR_OPENER, req, 15, "tor")
         if status in (429, 500, 502, 503, 504) and _transport_ok("direct"):
             status, res_body = _do_open(urllib.request.build_opener(), req, 10, "direct")
 
