@@ -235,7 +235,8 @@ def probe_transports() -> None:
 
 def _do_open(opener, req, timeout: int, transport: str) -> tuple[int, dict]:
     """Satu percobaan request dengan hard wall-clock cap.
-    Tidak boleh menggantung: SIGALRM yang menjadi jaring pengaman terakhir."""
+    Tidak boleh menggantung: SIGALRM yang menjadi jaring pengaman terakhir.
+    `opener` harus object yang punya .open(req, timeout=...)."""
     try:
         with _hard_timeout(REQUEST_HARD_CAP):
             with opener.open(req, timeout=timeout) as resp:
@@ -248,7 +249,7 @@ def _do_open(opener, req, timeout: int, transport: str) -> tuple[int, dict]:
         try:
             res_body = json.loads(raw)
         except Exception:
-            res_body = {"error": raw}
+            res_body = {"error": raw[:500]}
         _transport_ok_again(transport)
         return e.code, res_body
     except HardTimeout:
@@ -256,7 +257,7 @@ def _do_open(opener, req, timeout: int, transport: str) -> tuple[int, dict]:
         return 504, {"error": f"hard timeout {REQUEST_HARD_CAP}s"}
     except Exception as e:
         _transport_failed(transport)
-        return 500, {"error": str(e)}
+        return 500, {"error": f"{type(e).__name__}: {e}"}
 
 
 def api_request(path: str, token: str = "", method: str = "GET", body: dict = None, max_retries: int = 3) -> tuple[int, dict]:
@@ -290,12 +291,12 @@ def api_request(path: str, token: str = "", method: str = "GET", body: dict = No
 
         # 3. Direct fallback
         if status in [429, 500, 502, 503, 504] and _transport_ok("direct"):
-            status, res_body = _do_open(urllib.request, req, 10, "direct")
+            status, res_body = _do_open(urllib.request.build_opener(), req, 10, "direct")
 
-        # 429 = rate limit, JANGAN retry cepat. Backoff dan berhenti.
+        # 429 = rate limit ATAU kuota harian habis. Jangan retry cepat.
         if status == 429:
-            wait = min(30, 5 * (attempt + 1))
-            print(f"  [-] HTTP 429 (rate limit) dari {path} - backoff {wait}s lalu berhenti di request ini.")
+            wait = min(10, 2 * (attempt + 1))
+            print(f"  [-] HTTP 429 dari {path} - jeda {wait}s lalu berhenti di request ini (tidak dipaksa).")
             time.sleep(wait)
             return 429, res_body
 
@@ -420,13 +421,17 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
 
         chap_ok = 0
         series_read_counts = {}
-        # Dynamic target range 52 - 60 chapter per hari
-        target_reads = max(ch_rem, random.randint(52, 60))
+        quota_hit = False
+        # Target = sisa kuota yang dilaporkan server. JANGAN lebih dari itu:
+        # server membalas 429 "daily limit" kalau kita nebak-nebab melewati kuota.
+        target_reads = ch_rem
 
         # Mengalirkan ribuan komik secara dinamis sampai kuota harian terpenuhi 100%
         deadline = time.time() + ACCOUNT_DEADLINE
         for slug in discover_series_stream(target_series_slug, max_pages=50):
             if chap_ok >= target_reads:
+                break
+            if quota_hit:
                 break
             if time.time() > deadline:
                 print(f"  [-] Batas waktu akun ({ACCOUNT_DEADLINE}s) tercapai saat memindai komik -> lanjut tahap komentar.")
@@ -446,6 +451,12 @@ def farm_account(token: str, target_series_id: int, target_series_slug: str, del
                     break
 
                 st_c, res_c = api_request("/cultivation/rewards/chapter", token=token, method="POST", body={"targetId": cid, "mode": "chapter"})
+                if st_c == 429:
+                    # Kuota harian bab habis (atau rate limit) - hentikan pemindaian bab,
+                    # JANGAN lanjut sniff komik lain hanya untuk kena 429 lagi.
+                    print(f"  [-] 429 dari endpoint bab -> berhenti setelah {chap_ok} bab (kuota/rate limit, tidak dipaksa).")
+                    quota_hit = True
+                    break
                 if st_c in [200, 201]:
                     d = res_c.get("data", {})
                     if not d.get("alreadyAwarded") and d.get("reward", {}).get("awardedMerit", 0) > 0:
