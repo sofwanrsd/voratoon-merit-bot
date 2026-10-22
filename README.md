@@ -71,21 +71,35 @@ Tool otomasi untuk memaksimalkan akumulasi Merit dan kenaikan Level pada sistem 
 
 3. **Menjalankan Script:**
    ```bash
-   # Eksekusi klaim otomatis
-   python3 merit_farmer.py
+   # Skrip utama (contract-driven, baca /cultivation/catalog)
+   python3 claim_daily_merit.py
 
    # Pemeriksaan status akun tanpa klaim
-   python3 merit_farmer.py --status-only
+   python3 claim_daily_merit.py --status-only
+
+   # Legacy (logika lama, tidak disarankan)
+   python3 merit_farmer.py
    ```
 
-4. **Jadwal Crontab Linux (00:01 WIB):**
+   `claim_daily_merit.py` adalah script yang dipakai runner harian. Semua nilai
+   limit diambil dari kontrak server, dan hasilnya divalidasi ulang terhadap
+   leaderboard harian (top1 harus sama dengan plafon yang dihitung).
+
+4. **Jadwal Crontab Linux (00:00:30 WIB):**
    ```bash
    crontab -e
    ```
    Tambahkan baris berikut di akhir file:
    ```cron
-   1 17 * * * /usr/bin/python3 /path/ke/voratoon-merit-bot/merit_farmer.py >> /path/ke/voratoon-merit-bot/farmer.log 2>&1
+   0 17 * * * cd /path/ke/voratoon-merit-bot && sleep 30 && /usr/bin/python3 -u claim_daily_merit.py >> /path/ke/voratoon-merit-bot/farmer.log 2>&1
    ```
+   Fallback kedua (idempoten, kuota yang sudah penuh otomatis dilewati):
+   ```cron
+   40 18 * * * cd /path/ke/voratoon-merit-bot && /usr/bin/python3 -u claim_daily_merit.py >> /path/ke/voratoon-merit-bot/farmer.log 2>&1
+   ```
+
+   **Penting:** pakai hanya satu runner. Dua runner dari IP berbeda akan
+   saling men-toggle like (endpoint upvote itu toggle) dan merit bisa turun.
 
 ---
 

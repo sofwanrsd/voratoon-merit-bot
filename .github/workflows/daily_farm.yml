@@ -2,10 +2,14 @@ name: Voratoon Daily Merit Farm
 
 on:
   workflow_dispatch:
+  schedule:
+    # 17:00 UTC = 00:00 WIB (reset harian Voratoon), jalan 30 detik setelahnya
+    - cron: '30 17 * * *'
 
 jobs:
   farm:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -15,8 +19,22 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install dependencies
+        run: python -m pip install --quiet --break-system-packages PySocks
+
+      - name: Setup Tor transport
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tor
+          sudo sed -i 's/^#ControlPort 9051/ControlPort 9051/' /etc/tor/torrc
+          sudo systemctl restart tor
+          sleep 5
+
       - name: Run Merit Auto-Maxer
         env:
           VORATOON_TOKEN: ${{ secrets.VORATOON_TOKEN }}
-        run: |
-          python merit_farmer.py
+          # Runner GitHub punya IP baru tiap run, jadi limit per-IP tidak nempel.
+          # Tor dipakai sebagai transport utama + rotasi exit node.
+          VORATOON_MIN_INTERVAL: '0.12'
+          VORATOON_TOR_ROTATE: '40'
+        run: python claim_daily_merit.py
